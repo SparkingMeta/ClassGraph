@@ -32,7 +32,7 @@ target_include_directories(UI PUBLIC
 target_include_directories(UI PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}/Source
 )
-target_link_libraries(UI PUBLIC Router Qt5::Core Qt5::Gui Qt5::Widgets)
+target_link_libraries(UI PUBLIC Share Qt5::Core Qt5::Gui Qt5::Widgets)
 
 if(MSVC)
 	target_compile_options(UI PRIVATE /utf-8)

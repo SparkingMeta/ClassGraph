@@ -1,7 +1,7 @@
 #pragma execution_character_set("utf-8")
 
-#include "VApi.h"
-#include "classgraph_host_paths.h"
+#include "Meta.h"
+#include "Engine.h"
 #include "queue.h"
 #include "event.h"
 #include "bus.h"
@@ -9,21 +9,18 @@
 
 #include "MainWindow.h"
 #include <QApplication>
+#include <QDir>
 #include <QStyleFactory>
-
-using namespace CG::Router;
 
 int main(int argc, char* argv[])
 {
 	QApplication app(argc, argv);
 	QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
 
-	HostConfig cfg = MakeCoreHostConfig();
-	cfg.type_out_dir = CLASSGRAPH_TYPE_OUT_DIR;
-	cfg.asset_root = CLASSGRAPH_ASSET_ROOT;
-	InitHost(cfg);
-
-	auto& router = GetRouter();
+	cg::model::Model model;
+	cg::engine::Engine engine;
+	engine.SetRoot(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("Assets")).toStdString());
+	engine.SetTypeDir(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("Types")).toStdString());
 
 	auto bus = CreateBus<Event>();
 
@@ -56,26 +53,36 @@ int main(int argc, char* argv[])
 
 	MainWindow window;
 
-	router.SetRise([&](const Message& msg) {
+	bus->Subscribe(EventId::EI_Sink, Handler<Message>{[&engine](const Message& msg) {
+		engine.Apply(msg);
+	}});
+	bus->Subscribe(EventId::EI_Rise, Handler<Message>{[&model](const Message& msg) {
+		model.Reply(msg);
+	}});
+
+	model.SetRise([&](const Message& msg) {
+		window.Notify(msg);
+	});
+
+	engine.SetRise([&model](const Message& msg) {
+		model.Reply(msg);
+	});
+	engine.LoadTypes();
+	engine.SetRise([&rise_queue](const Message& msg) {
 		rise_queue->Push(Event{ EventId::EI_Rise, msg });
 	});
+
 	window.SetSink([&](const Message& msg) {
+		model.Submit(msg);
 		sink_queue->Push(Event{ EventId::EI_Sink, msg });
 	});
 
-	bus->Subscribe(EventId::EI_Sink, Handler<Message>{[&router](const Message& msg) {
-		router.DoAction(msg);
-	}});
-	bus->Subscribe(EventId::EI_Rise, Handler<Message>{[&window](const Message& msg) {
-		window.Notify(msg);
-	}});
-	
 	window.showMaximized();
 
 	const int code = app.exec();
 
 	sink_worker->Stop();
 	rise_worker->Stop();
-	ShutdownHost();
+	model.SetRise(nullptr);
 	return code;
 }

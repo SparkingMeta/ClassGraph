@@ -1,15 +1,15 @@
-#pragma once
+ï»¿#pragma once
 
 #include "VCore.h"
 
 std::string CORE_API GenerateGUID(const std::string& guid = "");
 
 struct SGuid : Struct {
-	// Éú³ÉĞÂ GUID
+	// ç”Ÿæˆæ–° GUID
 	static SGuid New();
-	// ×ª×Ö·û´®
+	// è½¬å­—ç¬¦ä¸²
 	std::string ToString() const;
-	// ´Ó×Ö·û´®½âÎö
+	// ä»å­—ç¬¦ä¸²è§£æ
 	static bool FromString(const std::string& str, SGuid& out);
 	bool IsNil() const;
 
@@ -17,6 +17,6 @@ struct SGuid : Struct {
 	bool operator!=(const SGuid& other) const { return !(*this == other); }
 
 private:
-	::GUID data;   // Ö±½Ó´æÏµÍ³ GUID
+	::GUID data;   // ç›´æ¥å­˜ç³»ç»Ÿ GUID
 
 };

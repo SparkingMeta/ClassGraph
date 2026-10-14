@@ -6,8 +6,6 @@
 #include <type_traits>
 
 enum class EventId : uint32 { 
-    EI_Recv, 
-    EI_Send,
     EI_Rise,
     EI_Sink,
 };

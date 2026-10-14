@@ -2,12 +2,12 @@
 #pragma execution_character_set("utf-8")
 
 #include "Export.h"
-#include "IRouter.h"
-#include "VDto.h"
 #include "bus.h"
 #include <functional>
 
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QMainWindow>
 #include <QPoint>
 #include <QPointF>
@@ -19,7 +19,6 @@
 #include <unordered_map>
 #include <vector>
 
-class GraphView;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QTabBar;
@@ -35,7 +34,37 @@ class QToolButton;
 class QFrame;
 class QStackedWidget;
 
-using namespace CG::Router;
+enum Action {
+	AddBP,
+	DelBP,
+	AltBP,
+	OpenBP,
+	CloseBP,
+
+	AddFunc,
+	DelFunc,
+	AltFunc,
+	RunFunc,
+	SelectFunc,
+
+	AddVar,
+	DelVar,
+	AltVar,
+	SelectVar,
+
+	AddNode,
+	DelNode,
+	AltNode,
+	SelectNode,
+
+	Compile,
+	TypeSync,
+	FuncSync,
+};
+
+using Emiter = std::function<void(const Message&)>;
+
+
 
 class MACRO_UI_API MainWindow : public QMainWindow {
 	Q_OBJECT
@@ -47,130 +76,150 @@ public:
 
 private:
 	void Dispatch(Action action, const QJsonObject& body = {});
-	void RegisterAction();
-	void RegisterAsset();
-	void RegisterFlow();
-	void RegisterVar();
-	void RegisterGraph();
-	void RegisterType();
-	void Print(const Message& msg);
 
-	void GetBlueprint(const Message& msg);
-	void GetAssets(const Message& msg);
-	void LoadAssets(const Message& msg);
-	void OpenBP(const Message& msg);
-	void CloseBP(const Message& msg);
-	void RenameBP(const Message& msg);
-	void SetSpace(const Message& msg);
-	void CreateBP(const Message& msg);
-	void DeleteBP(const Message& msg);
-
-	void GetGraph(const Message& msg);
-	void AddFlow(const Message& msg);
-	void DelFlow(const Message& msg);
-	void RenameFlow(const Message& msg);
-	void SelectFlow(const Message& msg);
-
-	void AddVar(const Message& msg);
-	void DelVar(const Message& msg);
-	void RenameVar(const Message& msg);
-	void SetVarType(const Message& msg);
-	void SetVarValue(const Message& msg);
-	void SelectVar(const Message& msg);
-	void PlaceGet(const Message& msg);
-	void PlaceSet(const Message& msg);
-
-	void GetDetails(const Message& msg);
-	void AddNode(const Message& msg);
-	void DelNode(const Message& msg);
-	void AddExit(const Message& msg);
-	void ConnectPin(const Message& msg);
-	void DisconnectPin(const Message& msg);
-	void DisconnectLine(const Message& msg);
-	void SetPinValue(const Message& msg);
-	void SelectNode(const Message& msg);
-	void AddParam(const Message& msg);
-	void DelParam(const Message& msg);
-	void RenameParam(const Message& msg);
-	void SetParamType(const Message& msg);
-
-	void GetPalette(const Message& msg);
-	void GenerateCode(const Message& msg);
-	void CompileType(const Message& msg);
-	void LoadType(const Message& msg);
-	void UnloadType(const Message& msg);
-
+	void Load();
 private slots:
-	void OnNewBlueprint();
-	void OnAddFlow();
+	void OnRunFunc();
+	void OnCompile();
+
+	void OnCreateBP();
+	void OnDeleteBP();
+	void OnAlterBP();
+	void OnOpenBP(QTreeWidgetItem* item);
+	void OnCloseBP();
+	
+
+	void OnAddFunc();
+	void OnDelFunc();
+	void OnAltFunc();
+
 	void OnAddVar();
-	void OnAddExit();
-	void OnRunFlow();
-	void OnGenerateCode();
-	void OnFlowClicked(QTreeWidgetItem* item, int column);
-	void OnVarClicked(QTreeWidgetItem* item, int column);
-	void OnPaletteDoubleClicked(QTreeWidgetItem* item, int column);
-	void OnGraphTabChanged(int index);
+	void OnDelVar();
+	void OnAltVar();
+
+	void OnAddNode();
+	void OnDelNode();
+	void OnAltNode();
+
+	void OnFuncSelected(QTreeWidgetItem* item);
+	void OnVarSelected(QTreeWidgetItem* item);
 	void OnNodeSelected(const QString& guid);
+
+	void OnGraphTabChanged(int index);
+	void OnGraphTabClose(int index);
+	void OnGraphMenu(const QString& flow_guid, const QPoint& global_pos, const QPointF& scene_pos);
+	void OnNodeMoved(const QString& guid, const QPointF& pos);
+	
 	void OnLog(const QString& text);
-	void OnFunctionMenu(const QPoint& pos);
-	void OnVariableMenu(const QPoint& pos);
-	void OnFunctionRenamed(QTreeWidgetItem* item, int column);
-	void OnVariableRenamed(QTreeWidgetItem* item, int column);
-	void OnDeleteFunction();
-	void OnDeleteVariable();
-	void OnVariableDropped(const QString& guid, const QPointF& scene_pos, Qt::KeyboardModifiers mods);
-	void OnFunctionDropped(const QString& guid, const QPointF& scene_pos);
-	void OnBlueprintRenamed();
+
+	void OnFuncMenu(const QPoint& pos);
+	void OnVarMenu(const QPoint& pos);
+
+	void OnAlterFunc(QTreeWidgetItem* item);
+	void OnAlterVar(QTreeWidgetItem* item);
+	void OnAlterAsset(QTreeWidgetItem* item);
+
+	void OnVarDropped(const QString& name, const QString& guid, const QPointF& scene_pos, Qt::KeyboardModifiers mods);
+	void OnFuncDropped(const QString& guid, const QPointF& scene_pos);
+
 	void OnVarTypeChosen(int index);
-	void OnNodeContextMenu(const QString& node_guid, const QPoint& global_pos);
-	void OnAssetDoubleClicked(QTreeWidgetItem* item, int column);
 	void OnAssetMenu(const QPoint& pos);
-	void OnDeleteAsset();
+
+	void Slot_AddBP(const Message& msg);
+	void Slot_DelBP(const Message& msg);
+	void Slot_AltBP(const Message& msg);
+	void Slot_OpenBP(const Message& msg);
+	void Slot_CloseBP(const Message& msg);
+	void Slot_TypeSync(const Message& msg);
+	void Slot_FuncSync(const Message& msg);
+	void Slot_AddFunc(const Message& msg);
+	void Slot_DelFunc(const Message& msg);
+	void Slot_AltFunc(const Message& msg);
+	void Slot_AddVar(const Message& msg);
+	void Slot_DelVar(const Message& msg);
+	void Slot_AltVar(const Message& msg);
+	void Slot_SelectFunc(const Message& msg);
+	void Slot_SelectVar(const Message& msg);
+	void Slot_SelectNode(const Message& msg);
+	void Slot_AddNode(const Message& msg);
+	void Slot_DelNode(const Message& msg);
+	void Slot_AltNode(const Message& msg);
+signals:
+	void Sig_AddBP(const Message& msg);
+	void Sig_DelBP(const Message& msg);
+	void Sig_AltBP(const Message& msg);
+	void Sig_OpenBP(const Message& msg);
+	void Sig_CloseBP(const Message& msg);
+	void Sig_TypeSync(const Message& msg);
+	void Sig_FuncSync(const Message& msg);
+	void Sig_AddFunc(const Message& msg);
+	void Sig_DelFunc(const Message& msg);
+	void Sig_AltFunc(const Message& msg);
+	void Sig_AddVar(const Message& msg);
+	void Sig_DelVar(const Message& msg);
+	void Sig_AltVar(const Message& msg);
+	void Sig_SelectFunc(const Message& msg);
+	void Sig_SelectVar(const Message& msg);
+	void Sig_SelectNode(const Message& msg);
+	void Sig_AddNode(const Message& msg);
+	void Sig_DelNode(const Message& msg);
+	void Sig_AltNode(const Message& msg);
 
 private:
+	template <typename Signal, typename Slot>
+	void RegisterAction(Action act, Signal sig, Slot slot) {
+		connect(this, sig, this, slot);
+		emiters_.insert({ act, [this, sig](const Message& msg) {(this->*sig)(msg);}});
+	}
+
 	void BuildUi();
+	void InitAction();
+
 	void AppendLog(const QString& text);
 	void ClearLog();
-	void ApplyBlueprintDto(const Blueprint& dto);
-	void ApplyPaletteDto(const Palette& dto);
-	void ApplyGraphDto(const Graph& dto);
-	void ApplyAssetListDto(const AssetList& dto);
-	void ApplyDetails(const QString& data);
-	void FillBlueprintDetails(const QString& json);
-	void FillNodeDetails(const NodeDetails& dto);
-	void FillVarDetails(const VarDetails& dto);
-	void RefreshTypeCombo();
-	void UpdateBreadcrumb();
-	void RefreshGraphTabs();
+	
+	Emiter FindEmiter(int act) const;
+
 	void SetEditorVisible(bool visible);
-	GraphView* CurrentGraphView() const;
-	GraphView* GraphViewOf(const QString& flow_guid) const;
-	GraphView* EnsureGraphView(const QString& flow_guid);
-	void BindGraphView(GraphView* view);
-	void RemoveGraphView(const QString& flow_guid);
-	void ClearGraphViews();
-	void ShowFlowView(const QString& flow_guid, bool load_if_empty);
-	void EditNewItem(QTreeWidget* tree, const QString& guid);
-	void PromptAddNodeParam(const QString& node_guid, bool is_entry);
-	void ClearDetailsForm();
-	void AddDetailRow(const QString& key, const QString& value);
+	void ResetEditor();
+	void OpenGraphPage(const QString& guid, const QString& name);
+	void CloseGraphPage(const QString& guid);
+	void RenameGraphPage(const QString& guid, const QString& name);
+	void ClearGraphPages();
+	int FindGraphTab(const QString& guid) const;
+	class GraphView* FindGraphView(const QString& guid) const;
+	void PutGraphNode(const QString& flow, const QString& guid, const QString& name, const QString& key, const QString& group, double x, double y, const QJsonArray& pins);
+	void ForgetGraphNode(const QString& flow, const QString& guid);
+	void MoveGraphNode(const QString& flow, const QString& guid, double x, double y);
+	bool FlowHasNode(const QString& flow, const QString& key) const;
+	void RestoreGraphNodes(class GraphView* view);
+	void ShowDetails(const QJsonObject& detail);
+	void AppendDetails(const QJsonArray& fields, const QString& prefix);
+	void ClearDetails();
+	void SetDetailValue(const QString& key, const QJsonValue& value);
 	bool eventFilter(QObject* watched, QEvent* event) override;
 
 	QStackedWidget* graph_stack_{};
-	std::unordered_map<std::string, GraphView*> graph_views_;
-	std::vector<CallerItem> palette_items_;
 	QFrame* graph_tab_frame_{};
 	QTabBar* graph_tabs_{};
 	QLabel* empty_hint_{};
-	QTreeWidget* function_tree_{};
+	QTreeWidget* asset_tree_{};
+	QTreeWidget* func_tree_{};
 	QTreeWidget* var_tree_{};
 	QComboBox* var_type_combo_{};
 	QLineEdit* bp_name_edit_{};
 	QTreeWidget* palette_tree_{};
-	QTreeWidget* asset_tree_{};
+	
+	struct DetailField {
+		QWidget* widget{};
+		std::function<void(QWidget*, const QJsonValue&)> set;
+	};
+
 	QWidget* details_host_{};
 	QFormLayout* details_form_{};
+	QString detail_kind_;
+	QString detail_guid_;
+	std::unordered_map<std::string, DetailField> detail_fields_{};
 	QTextEdit* log_{};
 	QLabel* breadcrumb_{};
 	QDockWidget* bp_dock_{};
@@ -179,17 +228,23 @@ private:
 	QToolButton* compile_btn_{};
 	QToolButton* play_btn_{};
 
-	Blueprint blueprint_dto_;
-	std::optional<Graph> graph_dto_;
-	std::optional<NodeDetails> last_node_details_;
 	QString selected_var_guid_;
-	bool has_blueprint_{ false };
-	bool renaming_{ false };
-	bool details_busy_{ false };
-	bool pending_edit_flow_{ false };
-	bool pending_edit_var_{ false };
 
 	std::function<void(const Message&)> sink_;
 	TBus<TEvent<Action, Message>> handlers_;
 	QString current_asset_guid_;
+	QJsonArray system_funcs_;
+
+	struct GraphNodeState {
+		QString guid;
+		QString name;
+		QString key;
+		QString group;
+		double x{};
+		double y{};
+		QJsonArray pins;
+	};
+	std::unordered_map<std::string, std::vector<GraphNodeState>> flow_nodes_;
+	
+	std::unordered_map<int, Emiter> emiters_;
 };

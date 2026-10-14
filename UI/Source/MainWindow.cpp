@@ -1,13 +1,9 @@
-﻿#pragma execution_character_set("utf-8")
+#pragma execution_character_set("utf-8")
 
 #include "MainWindow.h"
-#include "MainWindowInternal.h"
 #include "GraphView.h"
 #include "Theme.h"
 
-#include "IRouter.h"
-#include "VDto.h"
-#include "VDtoJson.h"
 
 #include <QAction>
 #include <QAbstractItemView>
@@ -26,6 +22,8 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QIcon>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -34,8 +32,10 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMetaType>
 #include <QMimeData>
 #include <QPainter>
+#include <QPixmap>
 #include <QPixmap>
 #include <QPointer>
 #include <QScrollArea>
@@ -71,82 +71,184 @@ namespace {
 		return dock;
 	}
 
-	void FillTypeCombo(QComboBox* combo, const std::vector<TypeItem>& types, const QString& current)
+	void FillTypeCombo(QComboBox* combo, const QJsonArray& types)
 	{
-		if (!combo) return;
+		if (!combo)
+			return;
+		const QString current = combo->currentText();
 		const QSignalBlocker blocker(combo);
 		combo->clear();
-		for (const auto& t : types) {
-			if (!t.name.empty())
-				combo->addItem(QString::fromStdString(t.name));
+		for (const auto& row : types) {
+			const QString name = row.toObject().value(g_key_name).toString();
+			if (!name.isEmpty())
+				combo->addItem(name);
 		}
-		if (combo->count() == 0)
-			combo->addItem(QStringLiteral("int"));
-		const int idx = combo->findText(current);
-		if (idx >= 0)
-			combo->setCurrentIndex(idx);
-		else if (!current.isEmpty()) {
-			combo->addItem(current);
-			combo->setCurrentIndex(combo->count() - 1);
+		const int index = combo->findText(current);
+		if (index >= 0)
+			combo->setCurrentIndex(index);
+	}
+
+	QIcon TypeMark(const QString& type)
+	{
+		if (type.isEmpty())
+			return {};
+		QPixmap pix(12, 12);
+		pix.fill(Qt::transparent);
+		QPainter painter(&pix);
+		painter.setRenderHint(QPainter::Antialiasing);
+		painter.setPen(Qt::NoPen);
+		painter.setBrush(CG::Ui::TypeColor(type));
+		painter.drawEllipse(QRectF(0.5, 0.5, 11, 11));
+		return QIcon(pix);
+	}
+
+	void FillNamedItems(QTreeWidget* tree, const QJsonArray& rows)
+	{
+		if (!tree)
+			return;
+		const QSignalBlocker blocker(tree);
+		tree->clear();
+		for (const auto& row : rows) {
+			const QJsonObject obj = row.toObject();
+			const QString guid = obj.value(g_key_guid).toString();
+			const QString name = obj.value(g_key_name).toString();
+			if (guid.isEmpty() || name.isEmpty())
+				continue;
+			auto* item = new QTreeWidgetItem(tree);
+			item->setFlags(item->flags() | Qt::ItemIsEditable);
+			item->setData(0, Qt::UserRole, guid);
+			item->setData(0, Qt::UserRole + 1, name);
+			item->setText(0, name);
+			const QString type = obj.value(g_key_type).toString();
+			if (!type.isEmpty())
+				item->setIcon(0, TypeMark(type));
 		}
 	}
 
-	void FillTypeCombo(QComboBox* combo, const std::vector<std::string>& types, const QString& current)
+	QString DetailText(const QJsonValue& value)
 	{
-		if (!combo) return;
-		const QSignalBlocker blocker(combo);
-		combo->clear();
-		for (const auto& t : types) {
-			if (!t.empty())
-				combo->addItem(QString::fromStdString(t));
-		}
-		if (combo->count() == 0)
-			combo->addItem(QStringLiteral("int"));
-		const int idx = combo->findText(current);
-		if (idx >= 0)
-			combo->setCurrentIndex(idx);
-		else if (!current.isEmpty()) {
-			combo->addItem(current);
-			combo->setCurrentIndex(combo->count() - 1);
-		}
+		if (value.isBool())
+			return value.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+		if (value.isDouble())
+			return QString::number(value.toDouble());
+		if (value.isString())
+			return value.toString();
+		return {};
 	}
 
-	QWidget* MakeParamEditRow(QWidget* parent, const QString& name_text, const QString& placeholder,
-		QLineEdit** name_out, QComboBox** type_out, QToolButton** btn_out, const QString& btn_text)
+	enum class DetailKind { Leaf, List };
+
+	struct DetailControl {
+		DetailKind kind{DetailKind::Leaf};
+		std::function<QWidget*(QWidget*, const QJsonObject&)> make;
+		std::function<void(QWidget*, const QJsonValue&)> set;
+	};
+
+	const std::unordered_map<std::string, DetailControl>& DetailControls()
 	{
-		auto* row = new QWidget(parent);
-		row->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-		auto* layout = new QHBoxLayout(row);
-		layout->setContentsMargins(0, 0, 0, 0);
-		layout->setSpacing(4);
+		static const std::unordered_map<std::string, DetailControl> table = {
+			{g_show_label, {DetailKind::Leaf,
+				[](QWidget* parent, const QJsonObject& field) -> QWidget* {
+					auto* label = new QLabel(DetailText(field.value(g_key_value)), parent);
+					label->setWordWrap(true);
+					label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+					return label;
+				},
+				[](QWidget* widget, const QJsonValue& value) {
+					if (auto* label = qobject_cast<QLabel*>(widget))
+						label->setText(DetailText(value));
+				}}},
+			{g_show_line, {DetailKind::Leaf,
+				[](QWidget* parent, const QJsonObject& field) -> QWidget* {
+					auto* edit = new QLineEdit(parent);
+					edit->setText(DetailText(field.value(g_key_value)));
+					return edit;
+				},
+				[](QWidget* widget, const QJsonValue& value) {
+					if (auto* edit = qobject_cast<QLineEdit*>(widget))
+						edit->setText(DetailText(value));
+				}}},
+			{g_show_combo, {DetailKind::Leaf,
+				[](QWidget* parent, const QJsonObject& field) -> QWidget* {
+					auto* box = new QComboBox(parent);
+					const QString current = DetailText(field.value(g_key_value));
+					bool found = current.isEmpty();
+					for (const auto& item : field.value(g_key_items).toArray()) {
+						const QString text = DetailText(item);
+						if (text.isEmpty())
+							continue;
+						box->addItem(text);
+						if (text == current)
+							found = true;
+					}
+					if (!found)
+						box->insertItem(0, current);
+					box->setCurrentText(current);
+					return box;
+				},
+				[](QWidget* widget, const QJsonValue& value) {
+					auto* box = qobject_cast<QComboBox*>(widget);
+					if (!box)
+						return;
+					const QString current = DetailText(value);
+					if (box->findText(current) < 0 && !current.isEmpty())
+						box->insertItem(0, current);
+					box->setCurrentText(current);
+				}}},
+			{g_show_check, {DetailKind::Leaf,
+				[](QWidget* parent, const QJsonObject& field) -> QWidget* {
+					auto* box = new QCheckBox(parent);
+					const QJsonValue value = field.value(g_key_value);
+					box->setChecked(value.isBool() ? value.toBool() : DetailText(value) == QStringLiteral("true") || DetailText(value) == QStringLiteral("1"));
+					return box;
+				},
+				[](QWidget* widget, const QJsonValue& value) {
+					if (auto* box = qobject_cast<QCheckBox*>(widget))
+						box->setChecked(value.isBool() ? value.toBool() : DetailText(value) == QStringLiteral("true") || DetailText(value) == QStringLiteral("1"));
+				}}},
+			{g_show_list, {DetailKind::List, {}, {}}},
+		};
+		return table;
+	}
 
-		auto* name = new QLineEdit(name_text, row);
-		name->setPlaceholderText(placeholder);
-		name->setMinimumWidth(48);
-		name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+	const DetailControl* FindDetailControl(const QString& show)
+	{
+		const auto& table = DetailControls();
+		const std::string key = show.isEmpty() ? std::string(g_show_label) : show.toStdString();
+		if (auto it = table.find(key); it != table.end())
+			return &it->second;
+		if (auto it = table.find(g_show_label); it != table.end())
+			return &it->second;
+		return nullptr;
+	}
 
-		auto* type = new QComboBox(row);
-		type->setObjectName(QStringLiteral("ParamTypeCombo"));
-		type->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-		type->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-		type->setMinimumContentsLength(4);
-		type->setFixedWidth(96);
+	QTreeWidgetItem* FindTreeItem(QTreeWidget* tree, const QString& guid)
+	{
+		if (!tree || guid.isEmpty())
+			return nullptr;
+		for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+			auto* item = tree->topLevelItem(i);
+			if (item && item->data(0, Qt::UserRole).toString() == guid)
+				return item;
+		}
+		return nullptr;
+	}
 
-		auto* btn = new QToolButton(row);
-		btn->setObjectName(QStringLiteral("PlusButton"));
-		btn->setText(btn_text);
-		btn->setAutoRaise(false);
-		btn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-		btn->setFixedSize(22, 22);
-
-		layout->addWidget(name, 1);
-		layout->addWidget(type, 0);
-		layout->addWidget(btn, 0, Qt::AlignVCenter);
-
-		if (name_out) *name_out = name;
-		if (type_out) *type_out = type;
-		if (btn_out) *btn_out = btn;
-		return row;
+	QTreeWidgetItem* FindAssetItem(QTreeWidget* tree, const QString& guid)
+	{
+		if (!tree || guid.isEmpty())
+			return nullptr;
+		for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+			auto* folder = tree->topLevelItem(i);
+			if (!folder)
+				continue;
+			for (int j = 0; j < folder->childCount(); ++j) {
+				auto* item = folder->child(j);
+				if (item && item->data(0, Qt::UserRole).toString() == guid)
+					return item;
+			}
+		}
+		return nullptr;
 	}
 
 	QTreeWidget* MakeTree()
@@ -195,7 +297,8 @@ namespace {
 		plus->setToolTip(QStringLiteral("添加%1").arg(title));
 		plus->setAutoRaise(false);
 		plus->setFixedSize(22, 22);
-		*plus_out = plus;
+		if (plus_out)
+			*plus_out = plus;
 		h->addWidget(plus, 0, Qt::AlignVCenter);
 
 		layout->addWidget(header);
@@ -203,9 +306,9 @@ namespace {
 		return root;
 	}
 
-	class FunctionTreeWidget : public QTreeWidget {
+	class FlowTree : public QTreeWidget {
 	public:
-		explicit FunctionTreeWidget(QWidget* parent = nullptr) : QTreeWidget(parent)
+		explicit FlowTree(QWidget* parent = nullptr) : QTreeWidget(parent)
 		{
 			setHeaderHidden(true);
 			setIndentation(12);
@@ -225,16 +328,16 @@ namespace {
 		{
 			auto* data = new QMimeData;
 			if (!items.isEmpty()) {
-				data->setData(kClassGraphFlowMime, items.front()->data(0, Qt::UserRole).toString().toUtf8());
+				data->setData(kFlowMime, items.front()->data(0, Qt::UserRole).toString().toUtf8());
 				data->setText(items.front()->text(0));
 			}
 			return data;
 		}
 	};
 
-	class VarTreeWidget : public QTreeWidget {
+	class VarTree : public QTreeWidget {
 	public:
-		explicit VarTreeWidget(QWidget* parent = nullptr) : QTreeWidget(parent)
+		explicit VarTree(QWidget* parent = nullptr) : QTreeWidget(parent)
 		{
 			setHeaderHidden(true);
 			setIndentation(12);
@@ -254,7 +357,7 @@ namespace {
 		{
 			auto* data = new QMimeData;
 			if (!items.isEmpty()) {
-				data->setData(kClassGraphVarMime, items.front()->data(0, Qt::UserRole).toString().toUtf8());
+				data->setData(kVarMime, items.front()->data(0, Qt::UserRole).toString().toUtf8());
 				data->setText(items.front()->text(0));
 			}
 			return data;
@@ -303,73 +406,54 @@ namespace {
 } // namespace
 
 using namespace CG::Ui;
-using namespace MainWindowUtil;
+
+Q_DECLARE_METATYPE(Message)
 
 MainWindow::MainWindow(QWidget* parent)
 	: QMainWindow(parent)
 {
+	qRegisterMetaType<Message>();
 	setStyleSheet(StyleSheet());
-	BuildUi();
-	RegisterAction();
-	resize(1440, 900);
 	setWindowTitle(QStringLiteral("ClassGraph"));
+
+	BuildUi();
+	InitAction();
+	
+	Load();
 }
 
 MainWindow::~MainWindow() = default;
 
 void MainWindow::Dispatch(Action action, const QJsonObject& body)
 {
-	if (!sink_)
-		return;
+	if (!sink_)return;
 	const QString token = QUuid::createUuid().toString(QUuid::WithoutBraces);
 	const QByteArray json = QJsonDocument(body).toJson(QJsonDocument::Compact);
-	sink_(MakeMessage(action, token.toStdString(), json.toStdString()));
+	sink_(Message{action, 0,token.toStdString(), json.toStdString()});
 }
 
 void MainWindow::SetSink(std::function<void(const Message&)> sink)
 {
 	sink_ = std::move(sink);
-	for (auto& [guid, view] : graph_views_) {
-		if (view)
-			view->SetSink(sink_);
-	}
-	Dispatch(Action::LoadAssets);
 }
 
 void MainWindow::Notify(const Message& msg)
 {
-	if (QThread::currentThread() != thread()) {
-		QTimer::singleShot(0, this, [this, msg]() { Notify(msg); });
-		return;
-	}
-
-	handlers_.Publish({static_cast<Action>(msg.act), msg});
+	auto emiter = FindEmiter(msg.act);
+	if (emiter)
+		emiter(msg);
 }
 
-void MainWindow::RegisterAction()
-{
-	handlers_.Subscribe(Action::Print, Handler<Message>(std::bind(&MainWindow::Print, this, std::placeholders::_1)));
-	RegisterAsset();
-	RegisterFlow();
-	RegisterVar();
-	RegisterGraph();
-	RegisterType();
-}
-
-void MainWindow::Print(const Message& msg)
-{
-	AppendLog(QString::fromStdString(MessageText(msg)));
-}
 
 void MainWindow::BuildUi()
 {
+	resize(1440, 900);
+
 	setDockOptions(AllowTabbedDocks | AllowNestedDocks | AnimatedDocks);
 	setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
 
 	auto* file_menu = menuBar()->addMenu(QStringLiteral("File"));
-	file_menu->addAction(QStringLiteral("New Blueprint"), this, &MainWindow::OnNewBlueprint, QKeySequence::New);
-	auto* edit_menu = menuBar()->addMenu(QStringLiteral("Edit"));
-	edit_menu->addAction(QStringLiteral("Add Return Node"), this, &MainWindow::OnAddExit);
+	file_menu->addAction(QStringLiteral("New Blueprint"), this, &MainWindow::OnCreateBP, QKeySequence::New);
 	auto* window_menu = menuBar()->addMenu(QStringLiteral("Window"));
 
 	auto* toolbar = addToolBar(QStringLiteral("Blueprint"));
@@ -380,14 +464,14 @@ void MainWindow::BuildUi()
 	compile_btn_->setObjectName(QStringLiteral("CompileButton"));
 	compile_btn_->setText(QStringLiteral("Compile"));
 	compile_btn_->setToolTip(QStringLiteral("Generate C++ from this Blueprint"));
-	connect(compile_btn_, &QToolButton::clicked, this, &MainWindow::OnGenerateCode);
+	connect(compile_btn_, &QToolButton::clicked, this, &MainWindow::OnCompile);
 	toolbar->addWidget(compile_btn_);
 
 	play_btn_ = new QToolButton;
 	play_btn_->setObjectName(QStringLiteral("PlayButton"));
 	play_btn_->setText(QStringLiteral("Play"));
 	play_btn_->setToolTip(QStringLiteral("Run the current graph"));
-	connect(play_btn_, &QToolButton::clicked, this, &MainWindow::OnRunFlow);
+	connect(play_btn_, &QToolButton::clicked, this, &MainWindow::OnRunFunc);
 	toolbar->addWidget(play_btn_);
 	toolbar->addSeparator();
 
@@ -409,13 +493,14 @@ void MainWindow::BuildUi()
 	graph_tabs_->setExpanding(false);
 	graph_tabs_->setDrawBase(false);
 	graph_tabs_->setMovable(false);
+	graph_tabs_->setTabsClosable(true);
 	tab_layout->addWidget(graph_tabs_);
 	center_layout->addWidget(graph_tab_frame_);
 
 	graph_stack_ = new QStackedWidget(center);
 	center_layout->addWidget(graph_stack_, 1);
 
-	empty_hint_ = new QLabel(QStringLiteral("从底部 Content Browser 打开蓝图"));
+	empty_hint_ = new QLabel(tr("从底部 Content Browser 打开蓝图"));
 	empty_hint_->setObjectName(QStringLiteral("PanelHint"));
 	empty_hint_->setAlignment(Qt::AlignCenter);
 	center_layout->addWidget(empty_hint_, 1);
@@ -423,10 +508,10 @@ void MainWindow::BuildUi()
 
 	QToolButton* fn_plus = nullptr;
 	QToolButton* var_plus = nullptr;
-	function_tree_ = new FunctionTreeWidget(this);
-	var_tree_ = new VarTreeWidget(this);
-	auto* fn_section = MakeAddSection(QStringLiteral("函数"), function_tree_, &fn_plus, nullptr);
-	auto* var_section = MakeAddSection(QStringLiteral("变量"), var_tree_, &var_plus, &var_type_combo_);
+	func_tree_ = new FlowTree(this);
+	var_tree_ = new VarTree(this);
+	auto* fn_section = MakeAddSection(tr("函数"), func_tree_, &fn_plus, nullptr);
+	auto* var_section = MakeAddSection(tr("变量"), var_tree_, &var_plus, &var_type_combo_);
 
 	auto* splitter = new QSplitter(Qt::Vertical);
 	splitter->addWidget(fn_section);
@@ -448,8 +533,8 @@ void MainWindow::BuildUi()
 	bp_label->setObjectName(QStringLiteral("SectionTitle"));
 	bp_name_edit_ = new QLineEdit;
 	bp_name_edit_->setObjectName(QStringLiteral("BlueprintNameEdit"));
-	bp_name_edit_->setToolTip(QStringLiteral("蓝图名称（C++ 类名）"));
-	connect(bp_name_edit_, &QLineEdit::editingFinished, this, &MainWindow::OnBlueprintRenamed);
+	bp_name_edit_->setToolTip(tr("蓝图名称（C++ 类名）"));
+	connect(bp_name_edit_, &QLineEdit::editingFinished, this, &MainWindow::OnAlterBP);
 	bp_row->addWidget(bp_label);
 	bp_row->addWidget(bp_name_edit_, 1);
 	bp_layout->addWidget(bp_header);
@@ -468,12 +553,12 @@ void MainWindow::BuildUi()
 	auto* bp_plus = new QToolButton(bp_title);
 	bp_plus->setObjectName(QStringLiteral("PlusButton"));
 	bp_plus->setText(QStringLiteral("+"));
-	bp_plus->setToolTip(QStringLiteral("新建蓝图"));
+	bp_plus->setToolTip(tr("新建蓝图"));
 	bp_plus->setAutoRaise(false);
 	bp_plus->setFixedSize(22, 22);
 	bp_title_row->addWidget(bp_plus, 0, Qt::AlignVCenter);
 	bp_dock_->setTitleBarWidget(bp_title);
-	connect(bp_plus, &QToolButton::clicked, this, &MainWindow::OnNewBlueprint);
+	connect(bp_plus, &QToolButton::clicked, this, &MainWindow::OnCreateBP);
 	addDockWidget(Qt::LeftDockWidgetArea, bp_dock_);
 	bp_dock_->setMinimumWidth(260);
 
@@ -518,12 +603,12 @@ void MainWindow::BuildUi()
 	auto* asset_plus = new QToolButton(asset_title);
 	asset_plus->setObjectName(QStringLiteral("PlusButton"));
 	asset_plus->setText(QStringLiteral("+"));
-	asset_plus->setToolTip(QStringLiteral("新建蓝图"));
+	asset_plus->setToolTip(tr("新建蓝图"));
 	asset_plus->setAutoRaise(false);
 	asset_plus->setFixedSize(22, 22);
 	asset_title_row->addWidget(asset_plus, 0, Qt::AlignVCenter);
 	asset_dock->setTitleBarWidget(asset_title);
-	connect(asset_plus, &QToolButton::clicked, this, &MainWindow::OnNewBlueprint);
+	connect(asset_plus, &QToolButton::clicked, this, &MainWindow::OnCreateBP);
 	addDockWidget(Qt::BottomDockWidgetArea, asset_dock);
 
 	log_ = new QTextEdit;
@@ -542,7 +627,7 @@ void MainWindow::BuildUi()
 	auto* log_clear = new QToolButton(log_title);
 	log_clear->setObjectName(QStringLiteral("ClearButton"));
 	log_clear->setText(QStringLiteral("Clear"));
-	log_clear->setToolTip(QStringLiteral("清空日志"));
+	log_clear->setToolTip(tr("清空日志"));
 	log_clear->setAutoRaise(false);
 	log_clear->setFixedHeight(22);
 	log_title_row->addWidget(log_clear, 0, Qt::AlignVCenter);
@@ -572,29 +657,57 @@ void MainWindow::BuildUi()
 	statusBar()->showMessage(QStringLiteral("Ready"));
 	SetEditorVisible(false);
 
-	connect(fn_plus, &QToolButton::clicked, this, &MainWindow::OnAddFlow);
+	connect(fn_plus, &QToolButton::clicked, this, &MainWindow::OnAddFunc);
 	connect(var_plus, &QToolButton::clicked, this, &MainWindow::OnAddVar);
-	connect(function_tree_, &QTreeWidget::itemClicked, this, &MainWindow::OnFlowClicked);
-	connect(function_tree_, &QTreeWidget::itemDoubleClicked, this, &MainWindow::OnFlowClicked);
-	connect(function_tree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::OnFunctionMenu);
-	connect(function_tree_, &QTreeWidget::itemChanged, this, &MainWindow::OnFunctionRenamed);
-	connect(var_tree_, &QTreeWidget::itemClicked, this, &MainWindow::OnVarClicked);
-	connect(var_tree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::OnVariableMenu);
-	connect(var_tree_, &QTreeWidget::itemChanged, this, &MainWindow::OnVariableRenamed);
+
+	connect(func_tree_, &QTreeWidget::itemClicked, this, &MainWindow::OnFuncSelected);
+	connect(func_tree_, &QTreeWidget::itemDoubleClicked, this, &MainWindow::OnFuncSelected);
+	connect(func_tree_, &QTreeWidget::itemChanged, this, &MainWindow::OnAlterFunc);
+	connect(func_tree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::OnFuncMenu);
+
+	connect(var_tree_, &QTreeWidget::itemClicked, this, &MainWindow::OnVarSelected);
+	connect(var_tree_, &QTreeWidget::itemChanged, this, &MainWindow::OnAlterVar);
+	connect(var_tree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::OnVarMenu);
+
 	if (var_type_combo_) {
 		if (auto* view = var_type_combo_->view())
 			view->viewport()->setAttribute(Qt::WA_NoMouseReplay, true);
 		connect(var_type_combo_, QOverload<int>::of(&QComboBox::activated),
 			this, &MainWindow::OnVarTypeChosen);
 	}
-	connect(palette_tree_, &QTreeWidget::itemDoubleClicked, this, &MainWindow::OnPaletteDoubleClicked);
+
 	connect(graph_tabs_, &QTabBar::currentChanged, this, &MainWindow::OnGraphTabChanged);
-	connect(asset_tree_, &QTreeWidget::itemDoubleClicked, this, &MainWindow::OnAssetDoubleClicked);
+	connect(graph_tabs_, &QTabBar::tabCloseRequested, this, &MainWindow::OnGraphTabClose);
+	connect(asset_tree_, &QTreeWidget::itemDoubleClicked, this, &MainWindow::OnOpenBP);
+	connect(asset_tree_, &QTreeWidget::itemChanged, this, &MainWindow::OnAlterAsset);
 	connect(asset_tree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::OnAssetMenu);
 
-	function_tree_->installEventFilter(this);
+	func_tree_->installEventFilter(this);
 	var_tree_->installEventFilter(this);
 	asset_tree_->installEventFilter(this);
+}
+
+void MainWindow::InitAction()
+{
+	RegisterAction(Action::AddBP, &MainWindow::Sig_AddBP, &MainWindow::Slot_AddBP);
+	RegisterAction(Action::DelBP, &MainWindow::Sig_DelBP, &MainWindow::Slot_DelBP);
+	RegisterAction(Action::AltBP, &MainWindow::Sig_AltBP, &MainWindow::Slot_AltBP);
+	RegisterAction(Action::OpenBP, &MainWindow::Sig_OpenBP, &MainWindow::Slot_OpenBP);
+	RegisterAction(Action::CloseBP, &MainWindow::Sig_CloseBP, &MainWindow::Slot_CloseBP);
+	RegisterAction(Action::TypeSync, &MainWindow::Sig_TypeSync, &MainWindow::Slot_TypeSync);
+	RegisterAction(Action::FuncSync, &MainWindow::Sig_FuncSync, &MainWindow::Slot_FuncSync);
+	RegisterAction(Action::AddFunc, &MainWindow::Sig_AddFunc, &MainWindow::Slot_AddFunc);
+	RegisterAction(Action::DelFunc, &MainWindow::Sig_DelFunc, &MainWindow::Slot_DelFunc);
+	RegisterAction(Action::AltFunc, &MainWindow::Sig_AltFunc, &MainWindow::Slot_AltFunc);
+	RegisterAction(Action::AddVar, &MainWindow::Sig_AddVar, &MainWindow::Slot_AddVar);
+	RegisterAction(Action::DelVar, &MainWindow::Sig_DelVar, &MainWindow::Slot_DelVar);
+	RegisterAction(Action::AltVar, &MainWindow::Sig_AltVar, &MainWindow::Slot_AltVar);
+	RegisterAction(Action::SelectFunc, &MainWindow::Sig_SelectFunc, &MainWindow::Slot_SelectFunc);
+	RegisterAction(Action::SelectVar, &MainWindow::Sig_SelectVar, &MainWindow::Slot_SelectVar);
+	RegisterAction(Action::SelectNode, &MainWindow::Sig_SelectNode, &MainWindow::Slot_SelectNode);
+	RegisterAction(Action::AddNode, &MainWindow::Sig_AddNode, &MainWindow::Slot_AddNode);
+	RegisterAction(Action::DelNode, &MainWindow::Sig_DelNode, &MainWindow::Slot_DelNode);
+	RegisterAction(Action::AltNode, &MainWindow::Sig_AltNode, &MainWindow::Slot_AltNode);
 }
 
 void MainWindow::AppendLog(const QString& text)
@@ -610,72 +723,16 @@ void MainWindow::ClearLog()
 		log_->clear();
 }
 
+Emiter MainWindow::FindEmiter(int act) const
+{
+	if(auto it = emiters_.find(act); it != emiters_.end())
+		return it->second;
+	return {};
+}
+
 void MainWindow::OnLog(const QString& text)
 {
 	AppendLog(text);
-}
-
-void MainWindow::UpdateBreadcrumb()
-{
-	if (!has_blueprint_) {
-		breadcrumb_->setText(QStringLiteral("Blueprints"));
-		setWindowTitle(QStringLiteral("ClassGraph"));
-		return;
-	}
-	const QString space = QString::fromStdString(blueprint_dto_.space);
-	const QString name = QString::fromStdString(blueprint_dto_.name);
-	const QString flow = QString::fromStdString(blueprint_dto_.current_flow_name);
-	breadcrumb_->setText(QStringLiteral("Blueprints / %1 / %2    %3").arg(space, name, flow));
-	setWindowTitle(QStringLiteral("%1 - ClassGraph").arg(name));
-	if (bp_name_edit_ && bp_name_edit_->text() != name) {
-		const QSignalBlocker blocker(bp_name_edit_);
-		bp_name_edit_->setText(name);
-	}
-}
-
-void MainWindow::RefreshTypeCombo()
-{
-	if (!var_type_combo_) return;
-	const QString current = var_type_combo_->currentText();
-	const QString self = QString::fromStdString(blueprint_dto_.self_type_name);
-	std::vector<TypeItem> types;
-	for (const auto& t : blueprint_dto_.types) {
-		if (!self.isEmpty() && QString::fromStdString(t.name) == self)
-			continue;
-		types.push_back(t);
-	}
-	FillTypeCombo(var_type_combo_, types, current);
-}
-
-void MainWindow::RefreshGraphTabs()
-{
-	if (!graph_tabs_) return;
-	const bool blocked = graph_tabs_->blockSignals(true);
-	while (graph_tabs_->count() > 0)
-		graph_tabs_->removeTab(0);
-	int current = 0;
-	int i = 0;
-	std::unordered_set<std::string> keep;
-	for (const auto& flow : blueprint_dto_.flows) {
-		keep.insert(flow.guid);
-		EnsureGraphView(QString::fromStdString(flow.guid));
-		const int idx = graph_tabs_->addTab(QString::fromStdString(flow.name));
-		graph_tabs_->setTabData(idx, QString::fromStdString(flow.guid));
-		if (flow.guid == blueprint_dto_.current_flow_guid)
-			current = i;
-		++i;
-	}
-	std::vector<QString> drop;
-	for (const auto& [guid, view] : graph_views_) {
-		if (!keep.count(guid))
-			drop.push_back(QString::fromStdString(guid));
-	}
-	for (const auto& guid : drop)
-		RemoveGraphView(guid);
-	if (graph_tabs_->count() > 0)
-		graph_tabs_->setCurrentIndex(current);
-	graph_tabs_->blockSignals(blocked);
-	ShowFlowView(QString::fromStdString(blueprint_dto_.current_flow_guid), false);
 }
 
 void MainWindow::SetEditorVisible(bool visible)
@@ -698,542 +755,285 @@ void MainWindow::SetEditorVisible(bool visible)
 		play_btn_->setVisible(visible);
 }
 
-GraphView* MainWindow::CurrentGraphView() const
+void MainWindow::ResetEditor()
 {
-	if (!graph_stack_)
-		return nullptr;
-	return qobject_cast<GraphView*>(graph_stack_->currentWidget());
+	ClearGraphPages();
+	SetEditorVisible(false);
+	current_asset_guid_.clear();
+	if (bp_name_edit_) {
+		QSignalBlocker blocker(bp_name_edit_);
+		bp_name_edit_->clear();
+	}
+	if (func_tree_) {
+		QSignalBlocker blocker(func_tree_);
+		func_tree_->clear();
+	}
+	if (var_tree_) {
+		QSignalBlocker blocker(var_tree_);
+		var_tree_->clear();
+	}
+	if (breadcrumb_)
+		breadcrumb_->setText(QStringLiteral("Blueprints"));
+	ClearDetails();
 }
 
-GraphView* MainWindow::GraphViewOf(const QString& flow_guid) const
+GraphView* MainWindow::FindGraphView(const QString& guid) const
 {
-	if (flow_guid.isEmpty())
+	const int index = FindGraphTab(guid);
+	if (index < 0 || !graph_stack_)
 		return nullptr;
-	auto it = graph_views_.find(flow_guid.toStdString());
-	if (it == graph_views_.end())
-		return nullptr;
-	return it->second;
+	return qobject_cast<GraphView*>(graph_stack_->widget(index));
 }
 
-GraphView* MainWindow::EnsureGraphView(const QString& flow_guid)
+void MainWindow::PutGraphNode(const QString& flow, const QString& guid, const QString& name, const QString& key, const QString& group, double x, double y, const QJsonArray& pins)
 {
-	if (flow_guid.isEmpty() || !graph_stack_)
-		return nullptr;
-	if (auto* existing = GraphViewOf(flow_guid))
-		return existing;
-	auto* view = new GraphView(graph_stack_);
-	view->SetFlowGuid(flow_guid);
-	if (sink_)
-		view->SetSink(sink_);
-	view->SetPalette(palette_items_);
-	BindGraphView(view);
-	graph_stack_->addWidget(view);
-	graph_views_[flow_guid.toStdString()] = view;
-	return view;
-}
-
-void MainWindow::BindGraphView(GraphView* view)
-{
-	if (!view)
+	if (flow.isEmpty() || guid.isEmpty() || name.isEmpty())
 		return;
-	connect(view, &GraphView::NodeSelected, this, &MainWindow::OnNodeSelected);
-	connect(view, &GraphView::LogMessage, this, &MainWindow::OnLog);
-	connect(view, &GraphView::VariableDropped, this, &MainWindow::OnVariableDropped);
-	connect(view, &GraphView::FunctionDropped, this, &MainWindow::OnFunctionDropped);
-	connect(view, &GraphView::NodeContextMenu, this, &MainWindow::OnNodeContextMenu);
+	auto& nodes = flow_nodes_[flow.toStdString()];
+	bool found = false;
+	for (auto& node : nodes) {
+		if (node.guid != guid)
+			continue;
+		node.name = name;
+		node.key = key;
+		node.group = group;
+		node.x = x;
+		node.y = y;
+		node.pins = pins;
+		found = true;
+		break;
+	}
+	if (!found)
+		nodes.push_back(GraphNodeState{guid, name, key, group, x, y, pins});
+	if (auto* view = FindGraphView(flow))
+		view->addNode(guid, name, key, group, QPointF(x, y), pins);
 }
 
-void MainWindow::RemoveGraphView(const QString& flow_guid)
+void MainWindow::ForgetGraphNode(const QString& flow, const QString& guid)
 {
-	auto it = graph_views_.find(flow_guid.toStdString());
-	if (it == graph_views_.end())
+	if (flow.isEmpty() || guid.isEmpty())
 		return;
-	auto* view = it->second;
-	graph_views_.erase(it);
-	if (graph_stack_ && view)
-		graph_stack_->removeWidget(view);
-	delete view;
-}
-
-void MainWindow::ClearGraphViews()
-{
-	for (auto& [guid, view] : graph_views_) {
-		if (graph_stack_ && view)
-			graph_stack_->removeWidget(view);
-		delete view;
-	}
-	graph_views_.clear();
-	graph_dto_.reset();
-}
-
-void MainWindow::ShowFlowView(const QString& flow_guid, bool load_if_empty)
-{
-	auto* view = EnsureGraphView(flow_guid);
-	if (!view || !graph_stack_)
+	auto it = flow_nodes_.find(flow.toStdString());
+	if (it == flow_nodes_.end())
 		return;
-	graph_stack_->setCurrentWidget(view);
-	if (load_if_empty && !view->GraphLoaded())
-		Dispatch(Action::GetGraph);
+	auto& nodes = it->second;
+	nodes.erase(std::remove_if(nodes.begin(), nodes.end(), [&](const GraphNodeState& node) {
+		return node.guid == guid;
+	}), nodes.end());
+	if (auto* view = FindGraphView(flow))
+		view->removeNode(guid);
 }
 
-void MainWindow::ApplyBlueprintDto(const Blueprint& dto)
+void MainWindow::MoveGraphNode(const QString& flow, const QString& guid, double x, double y)
 {
-	blueprint_dto_ = dto;
-	has_blueprint_ = !dto.guid.empty() || !dto.name.empty();
-
-	if (!function_tree_ || !var_tree_) return;
-	const bool blocked_fn = function_tree_->blockSignals(true);
-	const bool blocked_var = var_tree_->blockSignals(true);
-	function_tree_->clear();
-	var_tree_->clear();
-
-	for (const auto& flow : dto.flows) {
-		const QString name = QString::fromStdString(flow.name);
-		const QString guid = QString::fromStdString(flow.guid);
-		auto* item = new QTreeWidgetItem(QStringList() << name);
-		item->setFlags(item->flags() | Qt::ItemIsEditable);
-		item->setData(0, Qt::UserRole, guid);
-		item->setData(0, Qt::UserRole + 1, name);
-		item->setForeground(0, QBrush(QColor(140, 210, 140)));
-		item->setToolTip(0, QStringLiteral("函数  %1\n拖到图表可放置调用节点\nF2 重命名，Delete 删除").arg(name));
-		function_tree_->addTopLevelItem(item);
-		if (flow.guid == dto.current_flow_guid)
-			function_tree_->setCurrentItem(item);
-	}
-
-	for (const auto& var : dto.vars) {
-		const QString name = QString::fromStdString(var.name);
-		const QString guid = QString::fromStdString(var.guid);
-		const QString type_name = QString::fromStdString(var.type_name);
-		auto* item = new QTreeWidgetItem(QStringList() << name);
-		item->setFlags(item->flags() | Qt::ItemIsEditable);
-		item->setData(0, Qt::UserRole, guid);
-		item->setData(0, Qt::UserRole + 1, name);
-		item->setForeground(0, QBrush(PinColor(type_name, PinKind::Data)));
-		item->setToolTip(0, QStringLiteral("变量  %1 : %2\nF2 重命名，Delete 删除").arg(name, type_name));
-		var_tree_->addTopLevelItem(item);
-	}
-
-	function_tree_->blockSignals(blocked_fn);
-	var_tree_->blockSignals(blocked_var);
-
-	RefreshGraphTabs();
-	RefreshTypeCombo();
-	UpdateBreadcrumb();
-	SetEditorVisible(has_blueprint_);
-
-	if (pending_edit_flow_) {
-		pending_edit_flow_ = false;
-		EditNewItem(function_tree_, QString::fromStdString(dto.current_flow_guid));
-	}
-}
-
-void MainWindow::ApplyPaletteDto(const Palette& dto)
-{
-	if (!palette_tree_) return;
-	palette_items_ = dto.items;
-	palette_tree_->clear();
-	std::unordered_map<QString, QTreeWidgetItem*> groups;
-	auto ensure = [&](const QString& name) {
-		if (auto it = groups.find(name); it != groups.end())
-			return it->second;
-		auto* item = new QTreeWidgetItem(QStringList() << name);
-		item->setForeground(0, TextMuted());
-		palette_tree_->addTopLevelItem(item);
-		item->setExpanded(true);
-		groups[name] = item;
-		return item;
-	};
-
-	for (const auto& caller : dto.items) {
-		const QString group = QString::fromStdString(caller.group);
-		auto* parent = ensure(group.isEmpty() ? QStringLiteral("Functions") : group);
-		auto* item = new QTreeWidgetItem(parent, QStringList() << QString::fromStdString(caller.name));
-		item->setData(0, Qt::UserRole, QString::fromStdString(caller.key));
-	}
-
-	for (auto& [guid, view] : graph_views_) {
-		if (view)
-			view->SetPalette(palette_items_);
-	}
-}
-
-void MainWindow::ApplyGraphDto(const Graph& dto)
-{
-	graph_dto_ = dto;
-	const QString flow = QString::fromStdString(dto.flow_guid);
-	GraphView* view = GraphViewOf(flow);
-	if (!view)
-		view = EnsureGraphView(flow);
-	if (!view)
-		view = CurrentGraphView();
-	if (view)
-		view->ApplyGraph(dto);
-}
-
-void MainWindow::ApplyAssetListDto(const AssetList& dto)
-{
-	if (!asset_tree_) return;
-	const bool blocked = asset_tree_->blockSignals(true);
-	asset_tree_->clear();
-
-	std::unordered_map<QString, QTreeWidgetItem*> folders;
-	auto ensure = [&](const QString& space) {
-		if (auto it = folders.find(space); it != folders.end())
-			return it->second;
-		auto* folder = new QTreeWidgetItem(QStringList() << space);
-		folder->setFlags(folder->flags() & ~Qt::ItemIsEditable);
-		folder->setForeground(0, TextMuted());
-		asset_tree_->addTopLevelItem(folder);
-		folder->setExpanded(true);
-		folders[space] = folder;
-		return folder;
-	};
-
-	for (const auto& item : dto.items) {
-		const QString name = QString::fromStdString(item.name);
-		const QString guid = QString::fromStdString(item.key);
-		const QString path = QString::fromStdString(item.path);
-		auto* row = new QTreeWidgetItem(QStringList() << name);
-		row->setFlags(row->flags() & ~Qt::ItemIsEditable);
-		row->setData(0, Qt::UserRole, guid);
-		row->setToolTip(0, path);
-		if (item.space.empty())
-			asset_tree_->addTopLevelItem(row);
-		else
-			ensure(QString::fromStdString(item.space))->addChild(row);
-	}
-
-	asset_tree_->blockSignals(blocked);
-}
-
-void MainWindow::ApplyDetails(const QString& data)
-{
-	const QString kind = QJsonDocument::fromJson(data.toUtf8()).object()
-		.value(QStringLiteral("kind")).toString();
-	if (kind == QLatin1String("node")) {
-		NodeDetails node_dto;
-		if (ParseNode(data.toStdString(), node_dto)) {
-			selected_var_guid_.clear();
-			FillNodeDetails(node_dto);
+	if (flow.isEmpty() || guid.isEmpty())
+		return;
+	auto it = flow_nodes_.find(flow.toStdString());
+	if (it != flow_nodes_.end()) {
+		for (auto& node : it->second) {
+			if (node.guid != guid)
+				continue;
+			node.x = x;
+			node.y = y;
+			break;
 		}
-		return;
 	}
-	if (kind == QLatin1String("var")) {
-		VarDetails var_dto;
-		if (ParseVar(data.toStdString(), var_dto)) {
-			last_node_details_.reset();
-			selected_var_guid_ = QString::fromStdString(var_dto.guid);
-			FillVarDetails(var_dto);
-		}
-		return;
-	}
-	last_node_details_.reset();
-	selected_var_guid_.clear();
-	FillBlueprintDetails(data);
+	if (auto* view = FindGraphView(flow))
+		view->moveNode(guid, QPointF(x, y));
 }
 
-void MainWindow::ClearDetailsForm()
+bool MainWindow::FlowHasNode(const QString& flow, const QString& key) const
 {
-	if (!details_form_) return;
+	auto it = flow_nodes_.find(flow.toStdString());
+	if (it == flow_nodes_.end())
+		return false;
+	for (const auto& node : it->second) {
+		if (node.key == key)
+			return true;
+	}
+	return false;
+}
+
+void MainWindow::RestoreGraphNodes(GraphView* view)
+{
+	if (!view)
+		return;
+	auto it = flow_nodes_.find(view->guid().toStdString());
+	if (it == flow_nodes_.end())
+		return;
+	for (const auto& node : it->second)
+		view->addNode(node.guid, node.name, node.key, node.group, QPointF(node.x, node.y), node.pins);
+}
+
+int MainWindow::FindGraphTab(const QString& guid) const
+{
+	if (!graph_tabs_ || guid.isEmpty())
+		return -1;
+	for (int i = 0; i < graph_tabs_->count(); ++i) {
+		if (graph_tabs_->tabData(i).toString() == guid)
+			return i;
+	}
+	return -1;
+}
+
+void MainWindow::OpenGraphPage(const QString& guid, const QString& name)
+{
+	if (!graph_tabs_ || !graph_stack_ || guid.isEmpty())
+		return;
+
+	const QString title = name.isEmpty() ? guid : name;
+	int index = FindGraphTab(guid);
+	if (index < 0) {
+		auto* view = new GraphView(guid, graph_stack_);
+		connect(view, &GraphView::functionDropped, this, &MainWindow::OnFuncDropped);
+		connect(view, &GraphView::variableDropped, this, &MainWindow::OnVarDropped);
+		connect(view, &GraphView::contextMenuRequested, this, &MainWindow::OnGraphMenu);
+		connect(view, &GraphView::nodeMoved, this, &MainWindow::OnNodeMoved);
+		connect(view, &GraphView::deleteNodeRequested, this, [this](const QString& node_guid, const QString& key) {
+			if (key == QString::fromUtf8(g_node_entry) || node_guid.isEmpty())
+				return;
+			Dispatch(Action::DelNode, QJsonObject{{g_key_guid, node_guid}});
+		});
+		index = graph_stack_->addWidget(view);
+		RestoreGraphNodes(view);
+		QSignalBlocker blocker(graph_tabs_);
+		const int tab = graph_tabs_->addTab(title);
+		graph_tabs_->setTabData(tab, guid);
+		graph_tabs_->setCurrentIndex(tab);
+		graph_stack_->setCurrentIndex(index);
+		return;
+	}
+
+	graph_tabs_->setTabText(index, title);
+	QSignalBlocker blocker(graph_tabs_);
+	graph_tabs_->setCurrentIndex(index);
+	graph_stack_->setCurrentIndex(index);
+}
+
+void MainWindow::CloseGraphPage(const QString& guid)
+{
+	if (!graph_tabs_ || !graph_stack_)
+		return;
+	const int index = FindGraphTab(guid);
+	if (index < 0)
+		return;
+
+	QWidget* page = graph_stack_->widget(index);
+	{
+		QSignalBlocker blocker(graph_tabs_);
+		graph_tabs_->removeTab(index);
+		if (page)
+			graph_stack_->removeWidget(page);
+	}
+	delete page;
+
+	const int current = graph_tabs_->currentIndex();
+	if (current < 0 || current >= graph_stack_->count())
+		return;
+	graph_stack_->setCurrentIndex(current);
+	const QString next = graph_tabs_->tabData(current).toString();
+	if (!next.isEmpty())
+		Dispatch(Action::SelectFunc, QJsonObject{{g_key_guid, next}});
+}
+
+void MainWindow::RenameGraphPage(const QString& guid, const QString& name)
+{
+	const int index = FindGraphTab(guid);
+	if (index >= 0 && !name.isEmpty())
+		graph_tabs_->setTabText(index, name);
+}
+
+void MainWindow::ClearGraphPages()
+{
+	if (!graph_tabs_ || !graph_stack_)
+		return;
+	QSignalBlocker blocker(graph_tabs_);
+	while (graph_tabs_->count() > 0)
+		graph_tabs_->removeTab(graph_tabs_->count() - 1);
+	while (graph_stack_->count() > 0) {
+		QWidget* page = graph_stack_->widget(0);
+		graph_stack_->removeWidget(page);
+		delete page;
+	}
+	flow_nodes_.clear();
+}
+
+void MainWindow::ClearDetails()
+{
+	detail_fields_.clear();
+	detail_kind_.clear();
+	detail_guid_.clear();
+	if (!details_form_)
+		return;
 	while (details_form_->rowCount() > 0)
 		details_form_->removeRow(0);
 }
 
-void MainWindow::AddDetailRow(const QString& key, const QString& value)
+void MainWindow::ShowDetails(const QJsonObject& detail)
 {
-	auto* k = new QLabel(key);
-	k->setStyleSheet(QStringLiteral("color:#9a9a9a;"));
-	auto* v = new QLabel(value);
-	v->setStyleSheet(QStringLiteral("color:#e0e0e0;"));
-	v->setTextInteractionFlags(Qt::TextSelectableByMouse);
-	details_form_->addRow(k, v);
+	ClearDetails();
+	const QJsonObject target = detail.value(g_key_target).toObject();
+	detail_kind_ = target.value(g_key_kind).toString();
+	detail_guid_ = target.value(g_key_guid).toString();
+	AppendDetails(detail.value(g_key_fields).toArray(), QString());
 }
 
-void MainWindow::FillBlueprintDetails(const QString& json)
+void MainWindow::AppendDetails(const QJsonArray& fields, const QString& prefix)
 {
-	if (details_busy_ || !details_form_) return;
-	details_busy_ = true;
-	struct Guard {
-		bool& flag;
-		~Guard() { flag = false; }
-	} guard{ details_busy_ };
-
-	ClearDetailsForm();
-
-	const auto doc = QJsonDocument::fromJson(json.toUtf8());
-	const auto obj = doc.object();
-	if (!has_blueprint_ && obj.isEmpty()) {
-		auto* hint = new QLabel(QStringLiteral("No Blueprint"));
-		hint->setObjectName(QStringLiteral("PanelHint"));
-		details_form_->addRow(hint);
+	if (!details_form_ || !details_host_)
 		return;
+	for (const auto& row : fields) {
+		const QJsonObject field = row.toObject();
+		const QString show = field.value(g_key_show).toString();
+		const QString key = field.value(g_key_key).toString();
+		const QString text = field.value(g_key_text).toString();
+		const DetailControl* control = FindDetailControl(show);
+		if (!control) continue;
+
+		if (control->kind == DetailKind::List) {
+			if (!text.isEmpty()) {
+				auto* title = new QLabel(text, details_host_);
+				title->setObjectName(QStringLiteral("SectionTitle"));
+				details_form_->addRow(title);
+			}
+			for (const auto& group_row : field.value(g_key_value).toArray()) {
+				const QJsonObject group = group_row.toObject();
+				const QString group_key = group.value(g_key_key).toString();
+				const QString group_text = group.value(g_key_text).toString();
+				if (!group_text.isEmpty()) {
+					auto* title = new QLabel(group_text, details_host_);
+					title->setObjectName(QStringLiteral("SectionTitle"));
+					details_form_->addRow(title);
+				}
+				QString next = prefix;
+				if (!group_key.isEmpty())
+					next = prefix.isEmpty() ? group_key : prefix + QStringLiteral(".") + group_key;
+				if (!next.isEmpty())
+					next += QStringLiteral(".");
+				AppendDetails(group.value(g_key_fields).toArray(), next);
+			}
+			continue;
+		}
+		if (!control->make)
+			continue;
+		QWidget* widget = control->make(details_host_, field);
+		if (!widget)
+			continue;
+		details_form_->addRow(text, widget);
+		if (key.isEmpty() || !control->set)
+			continue;
+		detail_fields_.insert({(prefix + key).toStdString(), DetailField{widget, control->set}});
 	}
-
-	const QString name = obj.value(QStringLiteral("name")).toString(
-		QString::fromStdString(blueprint_dto_.name));
-	const QString space = obj.value(QStringLiteral("space")).toString(
-		QString::fromStdString(blueprint_dto_.space));
-	const QString guid = obj.value(QStringLiteral("guid")).toString(
-		QString::fromStdString(blueprint_dto_.guid));
-
-	auto* name_edit = new QLineEdit(name);
-	connect(name_edit, &QLineEdit::editingFinished, this, [this, name_edit]() {
-		const QString text = name_edit->text().trimmed();
-		if (text.isEmpty() || text == QString::fromStdString(blueprint_dto_.name))
-			return;
-		Dispatch(Action::RenameBP, QJsonObject{{QStringLiteral("name"), text}});
-	});
-	details_form_->addRow(QStringLiteral("Name"), name_edit);
-
-	auto* space_edit = new QLineEdit(space);
-	connect(space_edit, &QLineEdit::editingFinished, this, [this, space_edit]() {
-		const QString text = space_edit->text().trimmed();
-		if (text.isEmpty() || text == QString::fromStdString(blueprint_dto_.space))
-			return;
-		Dispatch(Action::SetSpace, QJsonObject{{QStringLiteral("space"), text}});
-	});
-	details_form_->addRow(QStringLiteral("Namespace"), space_edit);
-	AddDetailRow(QStringLiteral("Guid"), guid);
 }
 
-void MainWindow::FillNodeDetails(const NodeDetails& dto)
+void MainWindow::SetDetailValue(const QString& key, const QJsonValue& value)
 {
-	if (details_busy_ || !details_form_) return;
-	details_busy_ = true;
-	struct Guard {
-		bool& flag;
-		~Guard() { flag = false; }
-	} guard{ details_busy_ };
-
-	last_node_details_ = dto;
-	ClearDetailsForm();
-
-	AddDetailRow(QStringLiteral("Node"), QString::fromStdString(dto.title));
-	if (!dto.caller_name.empty())
-		AddDetailRow(QStringLiteral("Class"), QString::fromStdString(dto.caller_name));
-	if (!dto.kind_label.empty())
-		AddDetailRow(QStringLiteral("Kind"), QString::fromStdString(dto.kind_label));
-	AddDetailRow(QStringLiteral("Guid"), QString::fromStdString(dto.node_guid));
-
-	auto add_pin_rows = [this](const QString& title, PinDir dir, const std::vector<Pin>& pins) {
-		bool any = false;
-		for (const auto& pin : pins) {
-			if (pin.direction != dir)
-				continue;
-			if (!any) {
-				auto* label = new QLabel(title);
-				label->setObjectName(QStringLiteral("SectionTitle"));
-				details_form_->addRow(label);
-				any = true;
-			}
-			const QString kind = pin.kind == PinKind::Exec
-				? QStringLiteral("Exec") : QStringLiteral("Data");
-			QString value = QString::fromStdString(pin.type_name);
-			if (pin.kind == PinKind::Data && !pin.value_text.empty()) {
-				if (!value.isEmpty())
-					value += QStringLiteral("  ");
-				value += QString::fromStdString(pin.value_text);
-			}
-			if (pin.connected) {
-				if (!value.isEmpty())
-					value += QStringLiteral("  ");
-				value += QStringLiteral("linked");
-			}
-			const QString name = pin.name.empty()
-				? kind : QStringLiteral("%1  (%2)").arg(
-					QString::fromStdString(pin.name), kind);
-			AddDetailRow(name, value);
-		}
-	};
-	add_pin_rows(QStringLiteral("输入"), PinDir::In, dto.pins);
-	add_pin_rows(QStringLiteral("输出"), PinDir::Out, dto.pins);
-
-	if (!dto.can_edit_params)
+	auto it = detail_fields_.find(key.toStdString());
+	if (it == detail_fields_.end() || !it->second.widget || !it->second.set)
 		return;
-
-	const QString node_guid = QString::fromStdString(dto.node_guid);
-	auto* section = new QWidget(details_host_);
-	section->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-	auto* v = new QVBoxLayout(section);
-	v->setContentsMargins(0, 6, 0, 0);
-	v->setSpacing(6);
-
-	auto* header = new QWidget(section);
-	auto* header_layout = new QHBoxLayout(header);
-	header_layout->setContentsMargins(0, 0, 0, 0);
-	header_layout->setSpacing(4);
-
-	auto* title = new QLabel(dto.is_entry ? QStringLiteral("输入参数") : QStringLiteral("输出参数"), header);
-	title->setObjectName(QStringLiteral("SectionTitle"));
-	header_layout->addWidget(title);
-	header_layout->addStretch(1);
-
-	auto* add_type = new QComboBox(header);
-	add_type->setObjectName(QStringLiteral("ParamTypeCombo"));
-	add_type->setToolTip(QStringLiteral("新参数类型"));
-	add_type->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-	add_type->setMinimumContentsLength(4);
-	add_type->setFixedWidth(96);
-	FillTypeCombo(add_type, dto.type_names, QStringLiteral("int"));
-	header_layout->addWidget(add_type, 0, Qt::AlignVCenter);
-
-	auto* add_btn = new QToolButton(header);
-	add_btn->setObjectName(QStringLiteral("PlusButton"));
-	add_btn->setText(QStringLiteral("+"));
-	add_btn->setToolTip(dto.is_entry ? QStringLiteral("添加输入参数") : QStringLiteral("添加输出参数"));
-	add_btn->setAutoRaise(false);
-	add_btn->setFixedSize(22, 22);
-	header_layout->addWidget(add_btn, 0, Qt::AlignVCenter);
-	v->addWidget(header);
-
-	connect(add_btn, &QToolButton::clicked, this, [this, node_guid, add_type]() {
-		const QString type = add_type->currentText();
-		QTimer::singleShot(0, this, [this, node_guid, type]() {
-			Dispatch(Action::AddParam, QJsonObject{
-				{QStringLiteral("guid"), node_guid},
-				{QStringLiteral("type"), type},
-			});
-		});
-	});
-
-	for (const auto& arg : dto.params) {
-		const QString arg_name = QString::fromStdString(arg.name);
-		QLineEdit* name_edit = nullptr;
-		QComboBox* type_combo = nullptr;
-		QToolButton* del = nullptr;
-		auto* row = MakeParamEditRow(section, arg_name, {}, &name_edit, &type_combo, &del, QStringLiteral("×"));
-		FillTypeCombo(type_combo, dto.type_names,
-			arg.type_name.empty() ? QStringLiteral("int") : QString::fromStdString(arg.type_name));
-		if (del)
-			del->setToolTip(QStringLiteral("删除参数"));
-
-		connect(name_edit, &QLineEdit::editingFinished, this, [this, node_guid, arg_name, name_edit]() {
-			const QString next = name_edit->text().trimmed();
-			if (next == arg_name || next.isEmpty()) return;
-			QTimer::singleShot(0, this, [this, node_guid, arg_name, next]() {
-				Dispatch(Action::RenameParam, QJsonObject{
-					{QStringLiteral("guid"), node_guid},
-					{QStringLiteral("old"), arg_name},
-					{QStringLiteral("name"), next},
-				});
-			});
-		});
-		connect(type_combo, QOverload<int>::of(&QComboBox::activated), this,
-			[this, node_guid, arg_name, type_combo](int) {
-				const QString type_name = type_combo->currentText();
-				QTimer::singleShot(0, this, [this, node_guid, arg_name, type_name]() {
-					Dispatch(Action::SetParamType, QJsonObject{
-						{QStringLiteral("guid"), node_guid},
-						{QStringLiteral("name"), arg_name},
-						{QStringLiteral("type"), type_name},
-					});
-				});
-			});
-		connect(del, &QToolButton::clicked, this, [this, node_guid, arg_name]() {
-			QTimer::singleShot(0, this, [this, node_guid, arg_name]() {
-				Dispatch(Action::DelParam, QJsonObject{
-					{QStringLiteral("guid"), node_guid},
-					{QStringLiteral("name"), arg_name},
-				});
-			});
-		});
-		v->addWidget(row);
-	}
-
-	details_form_->addRow(section);
+	it->second.set(it->second.widget, value);
 }
 
-void MainWindow::FillVarDetails(const VarDetails& dto)
-{
-	if (details_busy_ || !details_form_) return;
-	details_busy_ = true;
-	struct Guard {
-		bool& flag;
-		~Guard() { flag = false; }
-	} guard{ details_busy_ };
-
-	ClearDetailsForm();
-	AddDetailRow(QStringLiteral("Kind"), QStringLiteral("Variable"));
-	AddDetailRow(QStringLiteral("Name"), QString::fromStdString(dto.name));
-
-	const QString guid = QString::fromStdString(dto.guid);
-	auto* type_combo = new QComboBox;
-	FillTypeCombo(type_combo, dto.type_names, QString::fromStdString(dto.type_name));
-	connect(type_combo, QOverload<int>::of(&QComboBox::activated), this,
-		[this, guid, type_combo](int) {
-			Dispatch(Action::SetVarType, QJsonObject{
-				{QStringLiteral("guid"), guid},
-				{QStringLiteral("type"), type_combo->currentText()},
-			});
-		});
-	details_form_->addRow(QStringLiteral("Type"), type_combo);
-
-	const QString value_text = QString::fromStdString(dto.value_text);
-	if (dto.edit_kind == EditKind::Bool) {
-		auto* box = new QCheckBox;
-		box->setChecked(value_text == QStringLiteral("true")
-			|| value_text == QStringLiteral("1")
-			|| value_text == QStringLiteral("True"));
-		connect(box, &QCheckBox::toggled, this, [this, guid](bool on) {
-			const QString text = on ? QStringLiteral("true") : QStringLiteral("false");
-			QTimer::singleShot(0, this, [this, guid, text]() {
-				Dispatch(Action::SetVarValue, QJsonObject{
-					{QStringLiteral("guid"), guid},
-					{QStringLiteral("value"), text},
-				});
-			});
-		});
-		details_form_->addRow(QStringLiteral("Default Value"), box);
-	} else if (dto.edit_kind != EditKind::None || !value_text.isEmpty()) {
-		auto* edit = new QLineEdit(value_text);
-		if (dto.edit_kind == EditKind::String)
-			edit->setPlaceholderText(QStringLiteral("\"\""));
-		else if (dto.edit_kind == EditKind::None)
-			edit->setPlaceholderText(QStringLiteral("{ }"));
-		connect(edit, &QLineEdit::editingFinished, this, [this, guid, edit]() {
-			const QString text = edit->text();
-			QTimer::singleShot(0, this, [this, guid, text]() {
-				Dispatch(Action::SetVarValue, QJsonObject{
-					{QStringLiteral("guid"), guid},
-					{QStringLiteral("value"), text},
-				});
-			});
-		});
-		details_form_->addRow(QStringLiteral("Default Value"), edit);
-	} else {
-		AddDetailRow(QStringLiteral("Default Value"), QStringLiteral("—"));
-	}
-	AddDetailRow(QStringLiteral("Guid"), guid);
-}
-
-void MainWindow::EditNewItem(QTreeWidget* tree, const QString& guid)
-{
-	if (!tree || guid.isEmpty()) return;
-	QPointer<QTreeWidget> tree_ptr(tree);
-	QTimer::singleShot(0, this, [tree_ptr, guid]() {
-		if (!tree_ptr)
-			return;
-		for (int i = 0; i < tree_ptr->topLevelItemCount(); ++i) {
-			auto* item = tree_ptr->topLevelItem(i);
-			if (!item || item->data(0, Qt::UserRole).toString() != guid)
-				continue;
-			tree_ptr->setCurrentItem(item);
-			tree_ptr->scrollToItem(item);
-			if (item->flags() & Qt::ItemIsEditable)
-				tree_ptr->editItem(item, 0);
-			return;
-		}
-	});
-}
-
-void MainWindow::OnAssetDoubleClicked(QTreeWidgetItem* item, int)
-{
-	if (!item) return;
-	const QString guid = item->data(0, Qt::UserRole).toString();
-	if (guid.isEmpty()) return;
-	Dispatch(Action::OpenBP, QJsonObject{{QStringLiteral("guid"), guid}});
-}
 
 void MainWindow::OnAssetMenu(const QPoint& pos)
 {
@@ -1243,30 +1043,438 @@ void MainWindow::OnAssetMenu(const QPoint& pos)
 		return;
 	asset_tree_->setCurrentItem(item);
 	QMenu menu(this);
-	menu.addAction(QStringLiteral("打开"), this, [this, item]() { OnAssetDoubleClicked(item, 0); });
-	menu.addAction(QStringLiteral("删除"), this, &MainWindow::OnDeleteAsset);
+	menu.addAction(tr("打开蓝图"), this, [this, item]() { OnOpenBP(item); });
+	menu.addAction(tr("重命名"), this, [this]() {
+		if (auto* current = asset_tree_->currentItem())
+			asset_tree_->editItem(current, 0);
+	});
+	menu.addAction(tr("删除蓝图"), this, &MainWindow::OnDeleteBP);
 	menu.exec(asset_tree_->viewport()->mapToGlobal(pos));
 }
 
-void MainWindow::OnDeleteAsset()
+void MainWindow::Slot_AddBP(const Message& msg)
 {
-	if (!asset_tree_) return;
-	auto* item = asset_tree_->currentItem();
-	if (!item) return;
-	const QString guid = item->data(0, Qt::UserRole).toString();
-	if (guid.isEmpty()) return;
-	Dispatch(Action::DeleteBP, QJsonObject{{QStringLiteral("guid"), guid}});
+	do {
+		if (!asset_tree_) break;
+
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			break;
+		}
+
+		const QString guid = obj.value(g_key_guid).toString();
+		const QString name = obj.value(g_key_name).toString();
+		QString space = obj.value(g_key_space).toString();
+		if (guid.isEmpty() || name.isEmpty()) break;
+		if (space.isEmpty())
+			space = "user";
+
+		QTreeWidgetItem* folder = nullptr;
+		for (int i = 0; i < asset_tree_->topLevelItemCount(); ++i) {
+			auto* item = asset_tree_->topLevelItem(i);
+			if (item && item->text(0) == space) {
+				folder = item;
+				break;
+			}
+		}
+		if (!folder) {
+			folder = new QTreeWidgetItem(asset_tree_);
+			folder->setText(0, space);
+		}
+
+		auto* item = new QTreeWidgetItem(folder);
+		item->setFlags(item->flags() | Qt::ItemIsEditable);
+		item->setData(0, Qt::UserRole, guid);
+		item->setData(0, Qt::UserRole + 1, name);
+		item->setText(0, name);
+		folder->setExpanded(true);
+		asset_tree_->setCurrentItem(item);
+		if (current_asset_guid_.isEmpty()) {
+			current_asset_guid_ = guid;
+			if (bp_name_edit_) {
+				QSignalBlocker blocker(bp_name_edit_);
+				bp_name_edit_->setText(name);
+			}
+		}
+	} while (0);
 }
 
-void MainWindow::OnNewBlueprint()
+void MainWindow::Slot_DelBP(const Message& msg)
+{
+	do {
+		if (!asset_tree_) break;
+
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			break;
+		}
+
+		const QString guid = obj.value(g_key_guid).toString();
+		auto* item = FindAssetItem(asset_tree_, guid);
+		if (!item) break;
+
+		auto* folder = item->parent();
+		delete item;
+		if (folder && folder->childCount() == 0)
+			delete folder;
+
+		if (current_asset_guid_ == guid)
+			ResetEditor();
+	} while (0);
+}
+
+void MainWindow::Slot_AltBP(const Message& msg)
+{
+	do {
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		const QString guid = obj.value(g_key_guid).toString();
+		auto* item = FindAssetItem(asset_tree_, guid.isEmpty() ? current_asset_guid_ : guid);
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			if (item) {
+				const QString old_name = item->data(0, Qt::UserRole + 1).toString();
+				if (!old_name.isEmpty()) {
+					QSignalBlocker blocker(asset_tree_);
+					item->setText(0, old_name);
+				}
+				if (bp_name_edit_ && current_asset_guid_ == item->data(0, Qt::UserRole).toString()) {
+					QSignalBlocker blocker(bp_name_edit_);
+					bp_name_edit_->setText(item->text(0));
+				}
+			}
+			break;
+		}
+
+		const QString name = obj.value(g_key_name).toString();
+		if (!item || name.isEmpty()) break;
+
+		{
+			QSignalBlocker blocker(asset_tree_);
+			item->setData(0, Qt::UserRole + 1, name);
+			item->setText(0, name);
+		}
+		if (bp_name_edit_ && current_asset_guid_ == guid) {
+			QSignalBlocker blocker(bp_name_edit_);
+			bp_name_edit_->setText(name);
+		}
+		if (detail_kind_ == g_kind_blueprint && detail_guid_ == guid) {
+			SetDetailValue(g_key_name, name);
+			if (obj.contains(g_key_path))
+				SetDetailValue(g_key_path, obj.value(g_key_path));
+			if (obj.contains(g_key_space))
+				SetDetailValue(g_key_space, obj.value(g_key_space));
+		}
+	} while (0);
+}
+
+void MainWindow::Slot_AddNode(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	if (msg.code != 0) {
+		const QString error = obj.value(g_key_error).toString();
+		if (!error.isEmpty())
+			AppendLog(error);
+		return;
+	}
+	PutGraphNode(obj.value(g_key_flow).toString(),
+		obj.value(g_key_guid).toString(),
+		obj.value(g_key_name).toString(),
+		obj.value(g_key_key).toString(),
+		obj.value(g_key_group).toString(),
+		obj.value(g_key_x).toDouble(),
+		obj.value(g_key_y).toDouble(),
+		obj.value(g_key_pins).toArray());
+}
+
+void MainWindow::Slot_DelNode(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	if (msg.code != 0) {
+		const QString error = obj.value(g_key_error).toString();
+		if (!error.isEmpty())
+			AppendLog(error);
+		return;
+	}
+	ForgetGraphNode(obj.value(g_key_flow).toString(), obj.value(g_key_guid).toString());
+}
+
+void MainWindow::Slot_AltNode(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	const QString guid = obj.value(g_key_guid).toString();
+	if (msg.code != 0) {
+		const QString error = obj.value(g_key_error).toString();
+		if (!error.isEmpty())
+			AppendLog(error);
+		for (const auto& [flow, nodes] : flow_nodes_) {
+			for (const auto& node : nodes) {
+				if (node.guid != guid)
+					continue;
+				if (auto* view = FindGraphView(QString::fromStdString(flow)))
+					view->moveNode(guid, QPointF(node.x, node.y));
+				return;
+			}
+		}
+		return;
+	}
+
+	const QString flow = obj.value(g_key_flow).toString();
+	const double x = obj.value(g_key_x).toDouble();
+	const double y = obj.value(g_key_y).toDouble();
+	MoveGraphNode(flow, guid, x, y);
+	if (detail_kind_ == g_kind_node && detail_guid_ == guid) {
+		SetDetailValue(g_key_x, x);
+		SetDetailValue(g_key_y, y);
+	}
+}
+
+void MainWindow::Slot_SelectFunc(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	if (msg.code != 0) {
+		const QString error = obj.value(g_key_error).toString();
+		if (!error.isEmpty())
+			AppendLog(error);
+		return;
+	}
+	ShowDetails(obj);
+}
+
+void MainWindow::Slot_SelectVar(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	if (msg.code != 0) {
+		const QString error = obj.value(g_key_error).toString();
+		if (!error.isEmpty())
+			AppendLog(error);
+		return;
+	}
+	ShowDetails(obj);
+}
+
+void MainWindow::Slot_SelectNode(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	if (msg.code != 0) {
+		const QString error = obj.value(g_key_error).toString();
+		if (!error.isEmpty())
+			AppendLog(error);
+		return;
+	}
+	ShowDetails(obj);
+}
+
+void MainWindow::Slot_AddFunc(const Message& msg)
+{
+	do {
+		if (!func_tree_) break;
+
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			break;
+		}
+
+		const QString asset = obj.value(g_key_asset).toString();
+		const QString guid = obj.value(g_key_guid).toString();
+		const QString name = obj.value(g_key_name).toString();
+		if (asset != current_asset_guid_ || guid.isEmpty() || name.isEmpty()) break;
+
+		{
+			QSignalBlocker blocker(func_tree_);
+			auto* item = new QTreeWidgetItem(func_tree_);
+			item->setFlags(item->flags() | Qt::ItemIsEditable);
+			item->setData(0, Qt::UserRole, guid);
+			item->setData(0, Qt::UserRole + 1, name);
+			item->setText(0, name);
+			func_tree_->setCurrentItem(item);
+		}
+		const QJsonObject node = obj.value(g_key_node).toObject();
+		PutGraphNode(guid,
+			node.value(g_key_guid).toString(),
+			node.value(g_key_name).toString(),
+			node.value(g_key_key).toString(),
+			node.value(g_key_group).toString(),
+			node.value(g_key_x).toDouble(),
+			node.value(g_key_y).toDouble(),
+			node.value(g_key_pins).toArray());
+		OpenGraphPage(guid, name);
+		Dispatch(Action::SelectFunc, QJsonObject{{g_key_guid, guid}});
+	} while (0);
+}
+
+void MainWindow::Slot_DelFunc(const Message& msg)
+{
+	do {
+		if (!func_tree_) break;
+
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			break;
+		}
+
+		const QString guid = obj.value(g_key_guid).toString();
+		auto* item = FindTreeItem(func_tree_, guid);
+		if (!item) break;
+		delete item;
+		flow_nodes_.erase(guid.toStdString());
+		CloseGraphPage(guid);
+
+		if (detail_kind_ == g_kind_flow && detail_guid_ == guid)
+			ClearDetails();
+	} while (0);
+}
+
+void MainWindow::Slot_AltFunc(const Message& msg)
+{
+	do {
+		if (!func_tree_) break;
+
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		const QString guid = obj.value(g_key_guid).toString();
+		auto* item = FindTreeItem(func_tree_, guid);
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			if (item) {
+				const QString old_name = item->data(0, Qt::UserRole + 1).toString();
+				if (!old_name.isEmpty()) {
+					QSignalBlocker blocker(func_tree_);
+					item->setText(0, old_name);
+				}
+			}
+			break;
+		}
+
+		const QString name = obj.value(g_key_name).toString();
+		if (!item || name.isEmpty()) break;
+
+		{
+			QSignalBlocker blocker(func_tree_);
+			item->setData(0, Qt::UserRole + 1, name);
+			item->setText(0, name);
+		}
+		RenameGraphPage(guid, name);
+		if (detail_kind_ == g_kind_flow && detail_guid_ == guid)
+			SetDetailValue(g_key_name, name);
+	} while (0);
+}
+
+void MainWindow::Slot_AddVar(const Message& msg)
+{
+	do {
+		if (!var_tree_) break;
+
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			break;
+		}
+
+		const QString asset = obj.value(g_key_asset).toString();
+		const QString guid = obj.value(g_key_guid).toString();
+		const QString name = obj.value(g_key_name).toString();
+		if (asset != current_asset_guid_ || guid.isEmpty() || name.isEmpty()) break;
+
+		QSignalBlocker blocker(var_tree_);
+		auto* item = new QTreeWidgetItem(var_tree_);
+		item->setFlags(item->flags() | Qt::ItemIsEditable);
+		item->setData(0, Qt::UserRole, guid);
+		item->setData(0, Qt::UserRole + 1, name);
+		item->setText(0, name);
+		item->setIcon(0, TypeMark(obj.value(g_key_type).toString()));
+	} while (0);
+}
+
+void MainWindow::Slot_DelVar(const Message& msg)
+{
+	do {
+		if (!var_tree_) break;
+
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			break;
+		}
+
+		const QString guid = obj.value(g_key_guid).toString();
+		auto* item = FindTreeItem(var_tree_, guid);
+		if (!item) break;
+		delete item;
+
+		if (detail_kind_ == g_kind_var && detail_guid_ == guid)
+			ClearDetails();
+	} while (0);
+}
+
+void MainWindow::Slot_AltVar(const Message& msg)
+{
+	do {
+		if (!var_tree_) break;
+
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		const QString guid = obj.value(g_key_guid).toString();
+		auto* item = FindTreeItem(var_tree_, guid);
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			if (item) {
+				const QString old_name = item->data(0, Qt::UserRole + 1).toString();
+				if (!old_name.isEmpty()) {
+					QSignalBlocker blocker(var_tree_);
+					item->setText(0, old_name);
+				}
+			}
+			break;
+		}
+
+		const QString name = obj.value(g_key_name).toString();
+		if (!item || name.isEmpty()) break;
+
+		{
+			QSignalBlocker blocker(var_tree_);
+			item->setData(0, Qt::UserRole + 1, name);
+			item->setText(0, name);
+			if (obj.contains(g_key_type))
+				item->setIcon(0, TypeMark(obj.value(g_key_type).toString()));
+		}
+		if (detail_kind_ == g_kind_var && detail_guid_ == guid) {
+			SetDetailValue(g_key_name, name);
+			if (obj.contains(g_key_type))
+				SetDetailValue(g_key_type, obj.value(g_key_type));
+		}
+	} while (0);
+}
+
+
+void MainWindow::OnCreateBP()
 {
 	QDialog dialog(this);
-	dialog.setWindowTitle(QStringLiteral("New Blueprint"));
+	dialog.setWindowTitle(tr("New Blueprint"));
 	auto* form = new QFormLayout(&dialog);
 	auto* space = new QLineEdit(QStringLiteral("user"));
 	auto* name = new QLineEdit(QStringLiteral("NewBlueprint"));
-	form->addRow(QStringLiteral("Namespace"), space);
-	form->addRow(QStringLiteral("Name"), name);
+	form->addRow(tr("Namespace"), space);
+	form->addRow(tr("Name"), name);
 	auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
 	form->addRow(buttons);
 	connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -1275,38 +1483,235 @@ void MainWindow::OnNewBlueprint()
 		return;
 	if (name->text().trimmed().isEmpty())
 		return;
-	Dispatch(Action::CreateBP, QJsonObject{
-		{QStringLiteral("space"), space->text().trimmed()},
-		{QStringLiteral("name"), name->text().trimmed()},
-	});
+	Dispatch(Action::AddBP, QJsonObject{{g_key_space, space->text().trimmed()},{g_key_name, name->text().trimmed()}});
 }
 
-void MainWindow::OnAddFlow()
+void MainWindow::OnDeleteBP()
 {
-	pending_edit_flow_ = true;
-	Dispatch(Action::AddFlow);
+	if (!asset_tree_) return;
+	auto* item = asset_tree_->currentItem();
+	if (!item) return;
+	const QString guid = item->data(0, Qt::UserRole).toString();
+	if (guid.isEmpty()) return;
+	Dispatch(Action::DelBP, QJsonObject{ {g_key_guid, guid} });
+}
+
+void MainWindow::OnAlterBP()
+{
+	if (!bp_name_edit_)
+		return;
+	const QString name = bp_name_edit_->text().trimmed();
+	auto* item = FindAssetItem(asset_tree_, current_asset_guid_);
+	if (name.isEmpty() || current_asset_guid_.isEmpty() || !item) {
+		if (item && bp_name_edit_) {
+			QSignalBlocker blocker(bp_name_edit_);
+			bp_name_edit_->setText(item->text(0));
+		}
+		return;
+	}
+	if (item->text(0) == name)
+		return;
+	Dispatch(Action::AltBP, QJsonObject{ {g_key_guid, current_asset_guid_}, {g_key_name, name} });
+}
+
+void MainWindow::OnAlterAsset(QTreeWidgetItem* item)
+{
+	if (!item) return;
+	const QString guid = item->data(0, Qt::UserRole).toString();
+	const QString old_name = item->data(0, Qt::UserRole + 1).toString();
+	const QString new_name = item->text(0).trimmed();
+	if (guid.isEmpty()) return;
+
+	if (new_name.isEmpty() || new_name == old_name) {
+		item->setText(0, old_name);
+		return;
+	}
+	Dispatch(Action::AltBP, QJsonObject{ {g_key_guid, guid}, {g_key_name, new_name} });
+}
+
+void MainWindow::Slot_OpenBP(const Message& msg)
+{
+	do {
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			break;
+		}
+
+		const QString guid = obj.value(g_key_guid).toString();
+		const QString name = obj.value(g_key_name).toString();
+		QString space = obj.value(g_key_space).toString();
+		if (guid.isEmpty() || name.isEmpty()) break;
+		if (space.isEmpty())
+			space = QStringLiteral("user");
+
+		current_asset_guid_ = guid;
+		ClearGraphPages();
+		SetEditorVisible(true);
+		if (bp_name_edit_) {
+			QSignalBlocker blocker(bp_name_edit_);
+			bp_name_edit_->setText(name);
+		}
+		if (breadcrumb_)
+			breadcrumb_->setText(QStringLiteral("%1 / %2").arg(space, name));
+		FillNamedItems(func_tree_, obj.value(g_key_flows).toArray());
+		FillNamedItems(var_tree_, obj.value(g_key_vars).toArray());
+		FillTypeCombo(var_type_combo_, obj.value(g_key_types).toArray());
+		ShowDetails(obj);
+		if (auto* item = FindAssetItem(asset_tree_, guid))
+			asset_tree_->setCurrentItem(item);
+	} while (0);
+}
+
+void MainWindow::Slot_TypeSync(const Message& msg)
+{
+	do {
+		if (msg.code != 0) break;
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		FillTypeCombo(var_type_combo_, obj.value(g_key_types).toArray());
+	} while (0);
+}
+
+void MainWindow::Slot_FuncSync(const Message& msg)
+{
+	do {
+		if (msg.code != 0) break;
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		const QJsonArray funcs = obj.value(g_key_funcs).toArray();
+		if (funcs.isEmpty() && !obj.contains(g_key_funcs))
+			break;
+		system_funcs_ = funcs;
+	} while (0);
+}
+
+void MainWindow::Slot_CloseBP(const Message& msg)
+{
+	do {
+		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+		if (msg.code != 0) {
+			const QString error = obj.value(g_key_error).toString();
+			if (!error.isEmpty())
+				AppendLog(error);
+			break;
+		}
+		const QString guid = obj.value(g_key_guid).toString();
+		if (!guid.isEmpty() && guid != current_asset_guid_)
+			break;
+		ResetEditor();
+	} while (0);
+}
+
+void MainWindow::OnOpenBP(QTreeWidgetItem* item)
+{
+	if (!item) return;
+	const QString guid = item->data(0, Qt::UserRole).toString();
+	if (guid.isEmpty()) return;
+	Dispatch(Action::OpenBP, QJsonObject{ {g_key_guid, guid} });
+}
+
+void MainWindow::OnAddFunc()
+{
+	if (current_asset_guid_.isEmpty())
+		return;
+	Dispatch(Action::AddFunc, QJsonObject{{g_key_guid, current_asset_guid_}});
+}
+
+void MainWindow::OnDelFunc()
+{
+	if (!func_tree_) return;
+	auto* item = func_tree_->currentItem();
+	if (!item) return;
+	const QString guid = item->data(0, Qt::UserRole).toString();
+	if (guid.isEmpty()) return;
+	Dispatch(Action::DelFunc, QJsonObject{ {g_key_guid, guid} });
+}
+
+void MainWindow::OnAltFunc()
+{
 }
 
 void MainWindow::OnAddVar()
 {
-	const QString type_name = var_type_combo_ && var_type_combo_->count()
-		? var_type_combo_->currentText() : QStringLiteral("int");
-	pending_edit_var_ = true;
-	Dispatch(Action::AddVar, QJsonObject{{QStringLiteral("type"), type_name}});
+	do {
+		if(!var_type_combo_) break;
+
+		auto type_name = var_type_combo_->currentText();
+		if (type_name.isEmpty() || current_asset_guid_.isEmpty()) break;
+
+		Dispatch(Action::AddVar, QJsonObject{{g_key_guid, current_asset_guid_}, {g_key_type, type_name}});
+	}while(0);
 }
 
-void MainWindow::OnAddExit()
+void MainWindow::OnDelVar()
 {
-	if (auto* view = CurrentGraphView())
-		view->AddExitAtCenter();
+	if (!var_tree_) return;
+	auto* item = var_tree_->currentItem();
+	if (!item) return;
+	const QString guid = item->data(0, Qt::UserRole).toString();
+	if (guid.isEmpty()) return;
+	Dispatch(Action::DelVar, QJsonObject{ {g_key_guid, guid} });
 }
 
-void MainWindow::OnRunFlow()
+void MainWindow::OnAltVar()
 {
-	Dispatch(Action::RunFlow);
 }
 
-void MainWindow::OnGenerateCode()
+void MainWindow::OnAddNode()
+{
+}
+
+void MainWindow::OnDelNode()
+{
+}
+
+void MainWindow::OnAltNode()
+{
+}
+
+void MainWindow::OnNodeMoved(const QString& guid, const QPointF& pos)
+{
+	if (guid.isEmpty())
+		return;
+	Dispatch(Action::AltNode, QJsonObject{
+		{g_key_guid, guid},
+		{g_key_x, pos.x()},
+		{g_key_y, pos.y()},
+	});
+}
+
+void MainWindow::OnFuncSelected(QTreeWidgetItem* item)
+{
+	if (!item) return;
+	const QString guid = item->data(0, Qt::UserRole).toString();
+	if (guid.isEmpty())
+		return;
+	OpenGraphPage(guid, item->text(0));
+	Dispatch(Action::SelectFunc, QJsonObject{ {g_key_guid, guid} });
+}
+
+void MainWindow::OnVarSelected(QTreeWidgetItem* item)
+{
+	if (!item) return;
+	const QString guid = item->data(0, Qt::UserRole).toString();
+	if (guid.isEmpty())
+		return;
+	Dispatch(Action::SelectVar, QJsonObject{ {g_key_guid, guid} });
+}
+
+void MainWindow::OnNodeSelected(const QString& guid)
+{
+	Dispatch(Action::SelectNode, QJsonObject{ {g_key_guid, guid} });
+}
+
+void MainWindow::OnRunFunc()
+{
+	QString flow_guid{};
+	Dispatch(Action::RunFunc, QJsonObject{{g_key_guid, flow_guid}});
+}
+
+void MainWindow::OnCompile()
 {
 	struct BusyGuard {
 		QWidget* w{};
@@ -1323,200 +1728,162 @@ void MainWindow::OnGenerateCode()
 		}
 	} busy(this);
 
-	Dispatch(Action::GenerateCode);
+	Dispatch(Action::Compile);
 }
 
-void MainWindow::OnFlowClicked(QTreeWidgetItem* item, int)
+void MainWindow::OnVarDropped(const QString&, const QString&, const QPointF&, Qt::KeyboardModifiers)
 {
-	if (!item) return;
-	const QString guid = item->data(0, Qt::UserRole).toString();
-	if (guid.isEmpty())
-		return;
-	if (guid.toStdString() == blueprint_dto_.current_flow_guid)
-		return;
-	Dispatch(Action::SelectFlow, QJsonObject{{QStringLiteral("guid"), guid}});
 }
 
-void MainWindow::OnVarClicked(QTreeWidgetItem* item, int)
+void MainWindow::OnFuncDropped(const QString& guid, const QPointF& scene_pos)
 {
-	if (!item) return;
-	const QString guid = item->data(0, Qt::UserRole).toString();
-	if (guid.isEmpty())
-		return;
-	Dispatch(Action::SelectVar, QJsonObject{{QStringLiteral("guid"), guid}});
-}
-
-void MainWindow::OnVariableDropped(const QString& guid, const QPointF& scene_pos, Qt::KeyboardModifiers mods)
-{
-	if (guid.isEmpty())
-		return;
-
-	QString name = guid;
-	for (const auto& var : blueprint_dto_.vars) {
-		if (var.guid == guid.toStdString()) {
-			name = QString::fromStdString(var.name);
-			break;
-		}
-	}
-
-	bool make_set = false;
-	if (mods & Qt::ControlModifier) {
-		make_set = false;
-	} else if (mods & Qt::AltModifier) {
-		make_set = true;
-	} else {
-		QMenu menu;
-		menu.setStyleSheet(QStringLiteral(
-			"QMenu { min-width: 0px; padding: 2px; }"
-			"QMenu::item { padding: 4px 10px; }"));
-		auto* get_act = menu.addAction(QStringLiteral("Get %1").arg(name));
-		auto* set_act = menu.addAction(QStringLiteral("Set %1").arg(name));
-		auto* chosen = menu.exec(QCursor::pos());
-		if (chosen == set_act)
-			make_set = true;
-		else if (chosen != get_act)
-			return;
-	}
-
-	Dispatch(make_set ? Action::PlaceVarSet : Action::PlaceVarGet, QJsonObject{
-		{QStringLiteral("guid"), guid},
-		{QStringLiteral("x"), scene_pos.x()},
-		{QStringLiteral("y"), scene_pos.y()},
-	});
-}
-
-void MainWindow::OnFunctionDropped(const QString& guid, const QPointF& scene_pos)
-{
-	if (guid.isEmpty())
+	auto* view = qobject_cast<GraphView*>(sender());
+	if (!view || guid.isEmpty())
 		return;
 	Dispatch(Action::AddNode, QJsonObject{
-		{QStringLiteral("key"), QStringLiteral("flow:%1").arg(guid)},
-		{QStringLiteral("x"), scene_pos.x()},
-		{QStringLiteral("y"), scene_pos.y()},
+		{g_key_guid, view->guid()},
+		{g_key_key, guid},
+		{g_key_x, scene_pos.x()},
+		{g_key_y, scene_pos.y()},
 	});
-}
-
-void MainWindow::OnPaletteDoubleClicked(QTreeWidgetItem* item, int)
-{
-	auto* view = CurrentGraphView();
-	if (!item || !view) return;
-	const QString key = item->data(0, Qt::UserRole).toString();
-	if (key.isEmpty()) return;
-	const QPointF center = view->mapToScene(view->viewport()->rect().center());
-	view->PlaceCaller(key, center);
 }
 
 void MainWindow::OnGraphTabChanged(int index)
 {
-	if (index < 0 || !graph_tabs_) return;
+	if (index < 0 || !graph_tabs_ || !graph_stack_) return;
+	if (index < graph_stack_->count())
+		graph_stack_->setCurrentIndex(index);
 	const QString guid = graph_tabs_->tabData(index).toString();
 	if (guid.isEmpty())
 		return;
-	ShowFlowView(guid, false);
-	if (guid.toStdString() == blueprint_dto_.current_flow_guid)
-		return;
-	Dispatch(Action::SelectFlow, QJsonObject{{QStringLiteral("guid"), guid}});
+	if (func_tree_) {
+		if (auto* item = FindTreeItem(func_tree_, guid)) {
+			QSignalBlocker blocker(func_tree_);
+			func_tree_->setCurrentItem(item);
+		}
+	}
+	Dispatch(Action::SelectFunc, QJsonObject{{g_key_guid, guid}});
 }
 
-void MainWindow::OnNodeSelected(const QString& guid)
+void MainWindow::OnGraphTabClose(int index)
 {
-	Dispatch(Action::SelectNode, QJsonObject{{QStringLiteral("guid"), guid}});
+	if (!graph_tabs_ || index < 0)
+		return;
+	CloseGraphPage(graph_tabs_->tabData(index).toString());
 }
 
-void MainWindow::OnBlueprintRenamed()
-{
-	if (!bp_name_edit_)
-		return;
-	const QString name = bp_name_edit_->text().trimmed();
-	if (name.isEmpty() || name == QString::fromStdString(blueprint_dto_.name))
-		return;
-	Dispatch(Action::RenameBP, QJsonObject{{QStringLiteral("name"), name}});
-}
-
-void MainWindow::OnFunctionMenu(const QPoint& pos)
+void MainWindow::OnGraphMenu(const QString& flow_guid, const QPoint& global_pos, const QPointF& scene_pos)
 {
 	QMenu menu(this);
-	menu.addAction(QStringLiteral("添加函数"), this, &MainWindow::OnAddFlow);
+	const bool has_exit = FlowHasNode(flow_guid, QString::fromUtf8(g_node_exit));
+	const char* groups[] = {g_group_function, g_group_script, g_group_controller, g_group_operator};
+	for (const char* group : groups) {
+		QList<QAction*> actions;
+		for (const auto& row : system_funcs_) {
+			const QJsonObject obj = row.toObject();
+			if (obj.value(g_key_group).toString() != QString::fromUtf8(group))
+				continue;
+			const QString name = obj.value(g_key_name).toString();
+			const QString key = obj.value(g_key_key).toString().isEmpty()
+				? name
+				: obj.value(g_key_key).toString();
+			if (name.isEmpty() || key.isEmpty())
+				continue;
+			if (key == QString::fromUtf8(g_node_exit) && has_exit)
+				continue;
+			auto* action = new QAction(name, &menu);
+			connect(action, &QAction::triggered, this, [this, flow_guid, scene_pos, key] {
+				Dispatch(Action::AddNode, QJsonObject{
+					{g_key_guid, flow_guid},
+					{g_key_key, key},
+					{g_key_x, scene_pos.x()},
+					{g_key_y, scene_pos.y()},
+				});
+			});
+			actions.append(action);
+		}
+		if (actions.isEmpty())
+			continue;
+		auto* sub = menu.addMenu(QString::fromUtf8(group));
+		sub->addActions(actions);
+	}
+
+	auto* user = menu.addMenu(tr("用户函数"));
+	if (func_tree_) {
+		for (int i = 0; i < func_tree_->topLevelItemCount(); ++i) {
+			auto* item = func_tree_->topLevelItem(i);
+			const QString func_guid = item ? item->data(0, Qt::UserRole).toString() : QString();
+			if (!item || item->text(0).isEmpty() || func_guid.isEmpty())
+				continue;
+			auto* action = user->addAction(item->text(0));
+			connect(action, &QAction::triggered, this, [this, flow_guid, scene_pos, func_guid] {
+				Dispatch(Action::AddNode, QJsonObject{
+					{g_key_guid, flow_guid},
+					{g_key_key, func_guid},
+					{g_key_x, scene_pos.x()},
+					{g_key_y, scene_pos.y()},
+				});
+			});
+		}
+	}
+	menu.exec(global_pos);
+}
+
+
+void MainWindow::OnFuncMenu(const QPoint& pos)
+{
+	QMenu menu(this);
+	menu.addAction(tr("添加函数"), this, &MainWindow::OnAddFunc);
 	menu.addSeparator();
-	menu.addAction(QStringLiteral("重命名"), this, [this]() {
-		if (auto* item = function_tree_->currentItem())
-			function_tree_->editItem(item, 0);
+	menu.addAction(tr("重命名"), this, [this]() {
+		if (auto* item = func_tree_->currentItem())
+			func_tree_->editItem(item, 0);
 	});
-	menu.addAction(QStringLiteral("删除"), this, &MainWindow::OnDeleteFunction);
-	menu.exec(function_tree_->mapToGlobal(pos));
+	menu.addAction(tr("删除函数"), this, &MainWindow::OnDelFunc);
+	menu.exec(func_tree_->mapToGlobal(pos));
 }
 
-void MainWindow::OnVariableMenu(const QPoint& pos)
+void MainWindow::OnVarMenu(const QPoint& pos)
 {
 	QMenu menu(this);
-	menu.addAction(QStringLiteral("添加变量"), this, &MainWindow::OnAddVar);
+	menu.addAction(tr("添加变量"), this, &MainWindow::OnAddVar);
 	menu.addSeparator();
-	menu.addAction(QStringLiteral("重命名"), this, [this]() {
+	menu.addAction(tr("重命名"), this, [this]() {
 		if (auto* item = var_tree_->currentItem())
 			var_tree_->editItem(item, 0);
 	});
-	menu.addAction(QStringLiteral("删除"), this, &MainWindow::OnDeleteVariable);
+	menu.addAction(tr("删除变量"), this, &MainWindow::OnDelVar);
 	menu.exec(var_tree_->mapToGlobal(pos));
 }
 
-void MainWindow::OnFunctionRenamed(QTreeWidgetItem* item, int)
+void MainWindow::OnAlterFunc(QTreeWidgetItem* item)
 {
-	if (renaming_ || !item) return;
+	if (!item) return;
 	const QString guid = item->data(0, Qt::UserRole).toString();
 	const QString old_name = item->data(0, Qt::UserRole + 1).toString();
 	const QString new_name = item->text(0).trimmed();
 	if (guid.isEmpty()) return;
 
 	if (new_name.isEmpty() || new_name == old_name) {
-		renaming_ = true;
 		item->setText(0, old_name);
-		renaming_ = false;
 		return;
 	}
-	Dispatch(Action::RenameFlow, QJsonObject{
-		{QStringLiteral("guid"), guid},
-		{QStringLiteral("name"), new_name},
-	});
+	Dispatch(Action::AltFunc, QJsonObject{{g_key_guid, guid}, {g_key_name, new_name}});
 }
 
-void MainWindow::OnVariableRenamed(QTreeWidgetItem* item, int)
+void MainWindow::OnAlterVar(QTreeWidgetItem* item)
 {
-	if (renaming_ || !item) return;
+	if (!item) return;
 	const QString guid = item->data(0, Qt::UserRole).toString();
 	const QString old_name = item->data(0, Qt::UserRole + 1).toString();
 	const QString new_name = item->text(0).trimmed();
 	if (guid.isEmpty()) return;
 
 	if (new_name.isEmpty() || new_name == old_name) {
-		renaming_ = true;
 		item->setText(0, old_name);
-		renaming_ = false;
 		return;
 	}
-	Dispatch(Action::RenameVar, QJsonObject{
-		{QStringLiteral("guid"), guid},
-		{QStringLiteral("name"), new_name},
-	});
-}
-
-void MainWindow::OnDeleteFunction()
-{
-	if (!function_tree_) return;
-	auto* item = function_tree_->currentItem();
-	if (!item) return;
-	const QString guid = item->data(0, Qt::UserRole).toString();
-	if (guid.isEmpty()) return;
-	Dispatch(Action::DelFlow, QJsonObject{{QStringLiteral("guid"), guid}});
-}
-
-void MainWindow::OnDeleteVariable()
-{
-	if (!var_tree_) return;
-	auto* item = var_tree_->currentItem();
-	if (!item) return;
-	const QString guid = item->data(0, Qt::UserRole).toString();
-	if (guid.isEmpty()) return;
-	Dispatch(Action::DelVar, QJsonObject{{QStringLiteral("guid"), guid}});
+	Dispatch(Action::AltVar, QJsonObject{{g_key_guid, guid},{g_key_name, new_name}});
 }
 
 void MainWindow::OnVarTypeChosen(int)
@@ -1529,103 +1896,39 @@ void MainWindow::OnVarTypeChosen(int)
 	AppendLog(QStringLiteral("新变量将使用类型 %1").arg(type_name));
 }
 
-void MainWindow::PromptAddNodeParam(const QString& node_guid, bool is_entry)
-{
-	QDialog dialog(this);
-	dialog.setWindowTitle(is_entry ? QStringLiteral("添加输入参数") : QStringLiteral("添加输出参数"));
-	auto* form = new QFormLayout(&dialog);
-	auto* name = new QLineEdit(QStringLiteral("NewParam"));
-	auto* type = new QComboBox;
-	std::vector<std::string> types;
-	if (last_node_details_ && last_node_details_->node_guid == node_guid.toStdString())
-		types = last_node_details_->type_names;
-	else {
-		for (const auto& t : blueprint_dto_.types)
-			types.push_back(t.name);
-	}
-	FillTypeCombo(type, types, QStringLiteral("int"));
-	form->addRow(QStringLiteral("Name"), name);
-	form->addRow(QStringLiteral("Type"), type);
-	auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-	form->addRow(buttons);
-	connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-	connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-	name->selectAll();
-	name->setFocus();
-	if (dialog.exec() != QDialog::Accepted)
-		return;
-	const QString n = name->text().trimmed();
-	Dispatch(Action::AddParam, QJsonObject{
-		{QStringLiteral("guid"), node_guid},
-		{QStringLiteral("name"), n.isEmpty() ? QStringLiteral("NewParam") : n},
-		{QStringLiteral("type"), type->currentText()},
-	});
-}
-
-void MainWindow::OnNodeContextMenu(const QString& node_guid, const QPoint& global_pos)
-{
-	if (node_guid.isEmpty())
-		return;
-
-	bool is_entry = false;
-	bool is_exit = false;
-	std::vector<Param> params;
-
-	if (last_node_details_ && last_node_details_->node_guid == node_guid.toStdString()) {
-		is_entry = last_node_details_->is_entry;
-		is_exit = last_node_details_->is_exit;
-		params = last_node_details_->params;
-	} else if (graph_dto_) {
-		for (const auto& node : graph_dto_->nodes) {
-			if (node.guid != node_guid.toStdString())
-				continue;
-			is_entry = node.is_entry;
-			is_exit = node.is_exit;
-			break;
-		}
-	}
-
-	if (!is_entry && !is_exit)
-		return;
-
-	QMenu menu(this);
-	menu.addAction(is_entry ? QStringLiteral("添加输入参数") : QStringLiteral("添加输出参数"),
-		this, [this, node_guid, is_entry]() {
-			PromptAddNodeParam(node_guid, is_entry);
-		});
-	if (!params.empty()) {
-		auto* del_menu = menu.addMenu(QStringLiteral("删除参数"));
-		for (const auto& arg : params) {
-			const QString arg_name = QString::fromStdString(arg.name);
-			del_menu->addAction(arg_name, this, [this, node_guid, arg_name]() {
-				Dispatch(Action::DelParam, QJsonObject{
-					{QStringLiteral("guid"), node_guid},
-					{QStringLiteral("name"), arg_name},
-				});
-			});
-		}
-	}
-	menu.exec(global_pos);
-}
-
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 {
 	if (event->type() == QEvent::KeyPress) {
 		const auto key = static_cast<QKeyEvent*>(event)->key();
 		if (key == Qt::Key_Delete) {
-			if (watched == function_tree_) {
-				OnDeleteFunction();
+			if (watched == func_tree_) {
+				OnDelFunc();
 				return true;
 			}
 			if (watched == var_tree_) {
-				OnDeleteVariable();
+				OnDelVar();
 				return true;
 			}
 			if (watched == asset_tree_) {
-				OnDeleteAsset();
+				OnDeleteBP();
 				return true;
 			}
 		}
 	}
 	return QMainWindow::eventFilter(watched, event);
 }
+
+void MainWindow::Load()
+{
+	//加载蓝图
+}
+
+
+
+void MainWindow::OnCloseBP()
+{
+	if (current_asset_guid_.isEmpty())
+		return;
+	Dispatch(Action::CloseBP, QJsonObject{ {g_key_guid, current_asset_guid_} });
+}
+

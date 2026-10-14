@@ -13,4 +13,57 @@ struct Message {
   std::string data{};
 };
 
-inline const std::string g_key_status = "status";
+enum ErrorCode : uint8_t
+{
+  EC_SUCCESS
+};
+
+inline constexpr const char* g_key_name = "name";
+inline constexpr const char* g_key_type = "type";
+inline constexpr const char* g_key_guid = "guid";
+inline constexpr const char* g_key_space = "space";
+inline constexpr const char* g_key_path = "path";
+inline constexpr const char* g_key_asset = "asset";
+inline constexpr const char* g_key_error = "error";
+inline constexpr const char* g_key_fields = "fields";
+inline constexpr const char* g_key_target = "target";
+inline constexpr const char* g_key_kind = "kind";
+inline constexpr const char* g_key_show = "show";
+inline constexpr const char* g_key_key = "key";
+inline constexpr const char* g_key_text = "text";
+inline constexpr const char* g_key_value = "value";
+inline constexpr const char* g_key_items = "items";
+inline constexpr const char* g_key_flows = "flows";
+inline constexpr const char* g_key_flow = "flow";
+inline constexpr const char* g_key_node = "node";
+inline constexpr const char* g_key_vars = "vars";
+inline constexpr const char* g_key_types = "types";
+inline constexpr const char* g_key_funcs = "funcs";
+inline constexpr const char* g_key_group = "group";
+inline constexpr const char* g_key_dll = "dll";
+inline constexpr const char* g_key_body = "body";
+inline constexpr const char* g_key_direct = "direct";
+inline constexpr const char* g_key_pins = "pins";
+inline constexpr const char* g_key_x = "x";
+inline constexpr const char* g_key_y = "y";
+inline constexpr const char* g_key_status = "status";
+inline constexpr const char* g_key_connected = "connected";
+
+inline constexpr const char* g_show_label = "label";
+inline constexpr const char* g_show_line = "line";
+inline constexpr const char* g_show_combo = "combo";
+inline constexpr const char* g_show_check = "check";
+inline constexpr const char* g_show_list = "list";
+
+inline constexpr const char* g_kind_blueprint = "blueprint";
+inline constexpr const char* g_kind_flow = "flow";
+inline constexpr const char* g_kind_var = "var";
+inline constexpr const char* g_kind_node = "node";
+
+inline constexpr const char* g_group_function = "Function";
+inline constexpr const char* g_group_script = "Script";
+inline constexpr const char* g_group_controller = "Controller";
+inline constexpr const char* g_group_operator = "Operator";
+
+inline constexpr const char* g_node_entry = "Entry";
+inline constexpr const char* g_node_exit = "Exit";
