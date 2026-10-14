@@ -138,7 +138,7 @@ int TestVTestInterop()
 	{
 		auto entry = bind_flow->GetGraph()->GetEntry();
 		if (!SetNodeVTest(entry, "input", source)) return 1;
-		if (!RunFlowOk(suite, "Bind", bind_flow, "bind")) return 1;
+		if (!RunFlowOk(suite, "Bind", bind_flow)) return 1;
 
 		user::VTest bound{};
 		if (!GetVarVTest(holder, bound) || bound.score != 7) {
@@ -151,7 +151,7 @@ int TestVTestInterop()
 	{
 		auto entry = invoke_flow->GetGraph()->GetEntry();
 		if (!SetNodeInt(entry, "a", 10) || !SetNodeInt(entry, "b", 32)) return 1;
-		if (!RunFlowOk(suite, "Invoke", invoke_flow, "invoke")) return 1;
+		if (!RunFlowOk(suite, "Invoke", invoke_flow)) return 1;
 
 		int sum = 0;
 		if (!GetVarInt(result, sum) || sum != 42) {

@@ -15,7 +15,7 @@ namespace CG::Core {
 
 		static std::shared_ptr<VNode> Make(const std::shared_ptr<ACaller>& caller);
 
-		Result Work(const std::string& token) override;
+		Result Work() override;
 		std::shared_ptr<ANode> Next(int index = 0) const override;
 		std::shared_ptr<APin> GetInputPin(uint16 id) const override;
 		std::shared_ptr<APin> GetOutputPin(uint16 id) const override;
@@ -26,7 +26,6 @@ namespace CG::Core {
 		std::optional<bool> IsPure() const override;
 
 		AContext* GetContext() const override { return context_.get(); }
-		std::string GetToken() const override { return token_; }
 
 		Vec2f GetCoord() const { return coord_; }
 		void SetCoord(const Vec2f& coord) { coord_ = coord; }
@@ -51,7 +50,6 @@ namespace CG::Core {
 
 	private:
 		Vec2f coord_{};
-		std::string token_{};
 		std::unordered_map<uint16, std::shared_ptr<APin>> in_pins_{};
 		std::unordered_map<uint16, std::shared_ptr<APin>> out_pins_{};
 		std::shared_ptr<AContext> context_{ nullptr };

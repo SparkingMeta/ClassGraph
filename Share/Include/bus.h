@@ -23,24 +23,22 @@ class TBus<TEvent<Id, Msg>> {
  public:
   void Subscribe(Id id, Handler<Msg> handler) {
     std::unique_lock lock(mutex_);
-    handlers_[id].push_back(std::move(handler));
+    handlers_.insert({id, handler});
   }
   void Publish(const TEvent<Id, Msg>& event) {
-    std::vector<Handler<Msg>> handlers;
+    Handler<Msg> handler;
     {
       std::shared_lock lock(mutex_);
-      handlers = handlers_[event.id];
+      if(auto it = handlers_.find(event.id); it != handlers_.end())
+        handler = it->second;
     }
-    for (const auto& handler : handlers) {
-      if (handler.func) {
-        handler.func(event.message);
-      }
-    }
+    if (handler.func) handler.func(event.message);
+      
   }
 
   private:
   std::shared_mutex mutex_;
-  std::unordered_map<EventId, std::vector<Handler<Msg>>> handlers_;
+  std::unordered_map<Id, Handler<Msg>> handlers_;
 };
 
 template<typename T>

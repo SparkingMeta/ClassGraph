@@ -81,8 +81,7 @@ bool GetVarInt(const std::shared_ptr<CG::Core::VVariant>& var, int& out);
 
 bool SetVarInt(const std::shared_ptr<CG::Core::VVariant>& var, int value);
 
-bool RunFlowOk(const char* suite, const char* label, const std::shared_ptr<CG::Core::AFlow>& flow,
-	const std::string& token = "test");
+bool RunFlowOk(const char* suite, const char* label, const std::shared_ptr<CG::Core::AFlow>& flow);
 
 CG::Core::VClass* LoadCompiledVTest();
 

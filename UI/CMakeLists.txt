@@ -29,6 +29,9 @@ target_compile_features(UI PUBLIC cxx_std_20)
 target_include_directories(UI PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}/Include
 )
+target_include_directories(UI PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/Source
+)
 target_link_libraries(UI PUBLIC Router Qt5::Core Qt5::Gui Qt5::Widgets)
 
 if(MSVC)

@@ -38,10 +38,9 @@ Result AController::Call(VObject* object, AContext* ctx) {
 			code = status.code;
 			if (code != 0) break;
 
-			std::string token = node->GetToken();
 			auto next = node->Next(status.index);
 			while (next) {
-				auto result = next->Work(token);
+				auto result = next->Work();
 				code = result.code;
 				if (code != 0)
 					break;

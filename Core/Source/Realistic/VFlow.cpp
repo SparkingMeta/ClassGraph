@@ -54,14 +54,14 @@ void CG::Core::VFlow::BindScript(const std::shared_ptr<AScript>& script)
 	script_ = script;
 }
 
-int CG::Core::VFlow::Run(const std::string& token)
+int CG::Core::VFlow::Run()
 {
 	int code = -1;
 	if (!graph_) return code;
 
 	std::shared_ptr<ANode> node = graph_->GetEntry();
 	while (node) {
-		auto result = node->Work(token);
+		auto result = node->Work();
 		code = result.code;
 		if (0 != code) break;
 		node = node->Next(result.index);

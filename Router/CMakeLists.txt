@@ -29,6 +29,7 @@ target_include_directories(${Project_Name} PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}/Include
 )
 target_include_directories(${Project_Name} PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/Source
 	$<TARGET_PROPERTY:Core,BINARY_DIR>/$<CONFIG>
 )
 target_link_libraries(${Project_Name} PUBLIC Core)

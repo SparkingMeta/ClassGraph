@@ -1,6 +1,7 @@
-#pragma execution_character_set("utf-8")
+﻿#pragma execution_character_set("utf-8")
 
 #include "MainWindow.h"
+#include "MainWindowInternal.h"
 #include "GraphView.h"
 #include "Theme.h"
 
@@ -40,6 +41,7 @@
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTextEdit>
@@ -53,7 +55,9 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace {
@@ -67,34 +71,7 @@ namespace {
 		return dock;
 	}
 
-	QTreeWidgetItem* FindTreeItem(QTreeWidget* tree, const QString& guid)
-	{
-		if (!tree || guid.isEmpty())
-			return nullptr;
-		for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-			auto* item = tree->topLevelItem(i);
-			if (item && item->data(0, Qt::UserRole).toString() == guid)
-				return item;
-		}
-		return nullptr;
-	}
-
-	void RemoveTreeItem(QTreeWidget* tree, const QString& guid)
-	{
-		if (auto* item = FindTreeItem(tree, guid))
-			delete item;
-	}
-
-	void RenameTreeItem(QTreeWidget* tree, const QString& guid, const QString& name)
-	{
-		auto* item = FindTreeItem(tree, guid);
-		if (!item)
-			return;
-		item->setText(0, name);
-		item->setData(0, Qt::UserRole + 1, name);
-	}
-
-	void FillTypeCombo(QComboBox* combo, const std::vector<TypeItemDto>& types, const QString& current)
+	void FillTypeCombo(QComboBox* combo, const std::vector<TypeItem>& types, const QString& current)
 	{
 		if (!combo) return;
 		const QSignalBlocker blocker(combo);
@@ -326,12 +303,14 @@ namespace {
 } // namespace
 
 using namespace CG::Ui;
+using namespace MainWindowUtil;
 
 MainWindow::MainWindow(QWidget* parent)
 	: QMainWindow(parent)
 {
 	setStyleSheet(StyleSheet());
 	BuildUi();
+	RegisterAction();
 	resize(1440, 900);
 	setWindowTitle(QStringLiteral("ClassGraph"));
 }
@@ -350,9 +329,11 @@ void MainWindow::Dispatch(Action action, const QJsonObject& body)
 void MainWindow::SetSink(std::function<void(const Message&)> sink)
 {
 	sink_ = std::move(sink);
-	if (graph_view_)
-		graph_view_->SetSink(sink_);
-	Dispatch(Action::ListAssets);
+	for (auto& [guid, view] : graph_views_) {
+		if (view)
+			view->SetSink(sink_);
+	}
+	Dispatch(Action::LoadAssets);
 }
 
 void MainWindow::Notify(const Message& msg)
@@ -362,42 +343,22 @@ void MainWindow::Notify(const Message& msg)
 		return;
 	}
 
-	const auto text = MessageText(msg);
-	switch (static_cast<Action>(msg.act)) {
-	case Action::Print:
-		AppendLog(QString::fromStdString(text));
-		break;
-	case Action::RefreshGraph: {
-		GraphDto dto;
-		if (ParseGraphDto(text, dto))
-			ApplyGraphDto(dto);
-		break;
-	}
-	case Action::RefreshPalette: {
-		PaletteDto dto;
-		if (ParsePaletteDto(text, dto))
-			ApplyPaletteDto(dto);
-		break;
-	}
-	case Action::RefreshMyBlueprint: {
-		BlueprintDto dto;
-		if (ParseBlueprintDto(text, dto))
-			ApplyBlueprintDto(dto);
-		break;
-	}
-	case Action::RefreshDetails:
-		ApplyRefreshDetails(QString::fromStdString(text));
-		break;
-	case Action::RefreshAssets: {
-		AssetListDto dto;
-		if (ParseAssetListDto(text, dto))
-			ApplyAssetListDto(dto);
-		break;
-	}
-	default:
-		ApplyResponse(static_cast<Action>(msg.act), QString::fromStdString(text));
-		break;
-	}
+	handlers_.Publish({static_cast<Action>(msg.act), msg});
+}
+
+void MainWindow::RegisterAction()
+{
+	handlers_.Subscribe(Action::Print, Handler<Message>(std::bind(&MainWindow::Print, this, std::placeholders::_1)));
+	RegisterAsset();
+	RegisterFlow();
+	RegisterVar();
+	RegisterGraph();
+	RegisterType();
+}
+
+void MainWindow::Print(const Message& msg)
+{
+	AppendLog(QString::fromStdString(MessageText(msg)));
 }
 
 void MainWindow::BuildUi()
@@ -451,8 +412,8 @@ void MainWindow::BuildUi()
 	tab_layout->addWidget(graph_tabs_);
 	center_layout->addWidget(graph_tab_frame_);
 
-	graph_view_ = new GraphView(center);
-	center_layout->addWidget(graph_view_, 1);
+	graph_stack_ = new QStackedWidget(center);
+	center_layout->addWidget(graph_stack_, 1);
 
 	empty_hint_ = new QLabel(QStringLiteral("从底部 Content Browser 打开蓝图"));
 	empty_hint_->setObjectName(QStringLiteral("PanelHint"));
@@ -543,6 +504,7 @@ void MainWindow::BuildUi()
 
 	asset_tree_ = MakeTree();
 	asset_tree_->setRootIsDecorated(true);
+	asset_tree_->setContextMenuPolicy(Qt::CustomContextMenu);
 	auto* asset_dock = MakeDock(QStringLiteral("Content Browser"), asset_tree_, this);
 	auto* asset_title = new QWidget(asset_dock);
 	asset_title->setObjectName(QStringLiteral("DockTitleBar"));
@@ -627,15 +589,12 @@ void MainWindow::BuildUi()
 	}
 	connect(palette_tree_, &QTreeWidget::itemDoubleClicked, this, &MainWindow::OnPaletteDoubleClicked);
 	connect(graph_tabs_, &QTabBar::currentChanged, this, &MainWindow::OnGraphTabChanged);
-	connect(graph_view_, &GraphView::NodeSelected, this, &MainWindow::OnNodeSelected);
-	connect(graph_view_, &GraphView::LogMessage, this, &MainWindow::OnLog);
-	connect(graph_view_, &GraphView::VariableDropped, this, &MainWindow::OnVariableDropped);
-	connect(graph_view_, &GraphView::FunctionDropped, this, &MainWindow::OnFunctionDropped);
-	connect(graph_view_, &GraphView::NodeContextMenu, this, &MainWindow::OnNodeContextMenu);
 	connect(asset_tree_, &QTreeWidget::itemDoubleClicked, this, &MainWindow::OnAssetDoubleClicked);
+	connect(asset_tree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::OnAssetMenu);
 
 	function_tree_->installEventFilter(this);
 	var_tree_->installEventFilter(this);
+	asset_tree_->installEventFilter(this);
 }
 
 void MainWindow::AppendLog(const QString& text)
@@ -679,7 +638,7 @@ void MainWindow::RefreshTypeCombo()
 	if (!var_type_combo_) return;
 	const QString current = var_type_combo_->currentText();
 	const QString self = QString::fromStdString(blueprint_dto_.self_type_name);
-	std::vector<TypeItemDto> types;
+	std::vector<TypeItem> types;
 	for (const auto& t : blueprint_dto_.types) {
 		if (!self.isEmpty() && QString::fromStdString(t.name) == self)
 			continue;
@@ -696,24 +655,35 @@ void MainWindow::RefreshGraphTabs()
 		graph_tabs_->removeTab(0);
 	int current = 0;
 	int i = 0;
+	std::unordered_set<std::string> keep;
 	for (const auto& flow : blueprint_dto_.flows) {
+		keep.insert(flow.guid);
+		EnsureGraphView(QString::fromStdString(flow.guid));
 		const int idx = graph_tabs_->addTab(QString::fromStdString(flow.name));
 		graph_tabs_->setTabData(idx, QString::fromStdString(flow.guid));
 		if (flow.guid == blueprint_dto_.current_flow_guid)
 			current = i;
 		++i;
 	}
+	std::vector<QString> drop;
+	for (const auto& [guid, view] : graph_views_) {
+		if (!keep.count(guid))
+			drop.push_back(QString::fromStdString(guid));
+	}
+	for (const auto& guid : drop)
+		RemoveGraphView(guid);
 	if (graph_tabs_->count() > 0)
 		graph_tabs_->setCurrentIndex(current);
 	graph_tabs_->blockSignals(blocked);
+	ShowFlowView(QString::fromStdString(blueprint_dto_.current_flow_guid), false);
 }
 
 void MainWindow::SetEditorVisible(bool visible)
 {
 	if (graph_tab_frame_)
 		graph_tab_frame_->setVisible(visible);
-	if (graph_view_)
-		graph_view_->setVisible(visible);
+	if (graph_stack_)
+		graph_stack_->setVisible(visible);
 	if (empty_hint_)
 		empty_hint_->setVisible(!visible);
 	if (bp_dock_)
@@ -728,7 +698,85 @@ void MainWindow::SetEditorVisible(bool visible)
 		play_btn_->setVisible(visible);
 }
 
-void MainWindow::ApplyBlueprintDto(const BlueprintDto& dto)
+GraphView* MainWindow::CurrentGraphView() const
+{
+	if (!graph_stack_)
+		return nullptr;
+	return qobject_cast<GraphView*>(graph_stack_->currentWidget());
+}
+
+GraphView* MainWindow::GraphViewOf(const QString& flow_guid) const
+{
+	if (flow_guid.isEmpty())
+		return nullptr;
+	auto it = graph_views_.find(flow_guid.toStdString());
+	if (it == graph_views_.end())
+		return nullptr;
+	return it->second;
+}
+
+GraphView* MainWindow::EnsureGraphView(const QString& flow_guid)
+{
+	if (flow_guid.isEmpty() || !graph_stack_)
+		return nullptr;
+	if (auto* existing = GraphViewOf(flow_guid))
+		return existing;
+	auto* view = new GraphView(graph_stack_);
+	view->SetFlowGuid(flow_guid);
+	if (sink_)
+		view->SetSink(sink_);
+	view->SetPalette(palette_items_);
+	BindGraphView(view);
+	graph_stack_->addWidget(view);
+	graph_views_[flow_guid.toStdString()] = view;
+	return view;
+}
+
+void MainWindow::BindGraphView(GraphView* view)
+{
+	if (!view)
+		return;
+	connect(view, &GraphView::NodeSelected, this, &MainWindow::OnNodeSelected);
+	connect(view, &GraphView::LogMessage, this, &MainWindow::OnLog);
+	connect(view, &GraphView::VariableDropped, this, &MainWindow::OnVariableDropped);
+	connect(view, &GraphView::FunctionDropped, this, &MainWindow::OnFunctionDropped);
+	connect(view, &GraphView::NodeContextMenu, this, &MainWindow::OnNodeContextMenu);
+}
+
+void MainWindow::RemoveGraphView(const QString& flow_guid)
+{
+	auto it = graph_views_.find(flow_guid.toStdString());
+	if (it == graph_views_.end())
+		return;
+	auto* view = it->second;
+	graph_views_.erase(it);
+	if (graph_stack_ && view)
+		graph_stack_->removeWidget(view);
+	delete view;
+}
+
+void MainWindow::ClearGraphViews()
+{
+	for (auto& [guid, view] : graph_views_) {
+		if (graph_stack_ && view)
+			graph_stack_->removeWidget(view);
+		delete view;
+	}
+	graph_views_.clear();
+	graph_dto_.reset();
+}
+
+void MainWindow::ShowFlowView(const QString& flow_guid, bool load_if_empty)
+{
+	auto* view = EnsureGraphView(flow_guid);
+	if (!view || !graph_stack_)
+		return;
+	graph_stack_->setCurrentWidget(view);
+	if (load_if_empty && !view->GraphLoaded())
+		Dispatch(Action::GetGraph);
+}
+
+void MainWindow::ApplyBlueprintDto(const Blueprint& dto)
 {
 	blueprint_dto_ = dto;
 	has_blueprint_ = !dto.guid.empty() || !dto.name.empty();
@@ -761,7 +809,7 @@ void MainWindow::ApplyBlueprintDto(const BlueprintDto& dto)
 		item->setFlags(item->flags() | Qt::ItemIsEditable);
 		item->setData(0, Qt::UserRole, guid);
 		item->setData(0, Qt::UserRole + 1, name);
-		item->setForeground(0, QBrush(PinColor(type_name, DtoPinKind::Data)));
+		item->setForeground(0, QBrush(PinColor(type_name, PinKind::Data)));
 		item->setToolTip(0, QStringLiteral("变量  %1 : %2\nF2 重命名，Delete 删除").arg(name, type_name));
 		var_tree_->addTopLevelItem(item);
 	}
@@ -780,9 +828,10 @@ void MainWindow::ApplyBlueprintDto(const BlueprintDto& dto)
 	}
 }
 
-void MainWindow::ApplyPaletteDto(const PaletteDto& dto)
+void MainWindow::ApplyPaletteDto(const Palette& dto)
 {
-	if (!palette_tree_ || !graph_view_) return;
+	if (!palette_tree_) return;
+	palette_items_ = dto.items;
 	palette_tree_->clear();
 	std::unordered_map<QString, QTreeWidgetItem*> groups;
 	auto ensure = [&](const QString& name) {
@@ -803,17 +852,26 @@ void MainWindow::ApplyPaletteDto(const PaletteDto& dto)
 		item->setData(0, Qt::UserRole, QString::fromStdString(caller.key));
 	}
 
-	graph_view_->SetPalette(dto.items);
+	for (auto& [guid, view] : graph_views_) {
+		if (view)
+			view->SetPalette(palette_items_);
+	}
 }
 
-void MainWindow::ApplyGraphDto(const GraphDto& dto)
+void MainWindow::ApplyGraphDto(const Graph& dto)
 {
 	graph_dto_ = dto;
-	if (graph_view_)
-		graph_view_->ApplyGraph(dto);
+	const QString flow = QString::fromStdString(dto.flow_guid);
+	GraphView* view = GraphViewOf(flow);
+	if (!view)
+		view = EnsureGraphView(flow);
+	if (!view)
+		view = CurrentGraphView();
+	if (view)
+		view->ApplyGraph(dto);
 }
 
-void MainWindow::ApplyAssetListDto(const AssetListDto& dto)
+void MainWindow::ApplyAssetListDto(const AssetList& dto)
 {
 	if (!asset_tree_) return;
 	const bool blocked = asset_tree_->blockSignals(true);
@@ -834,10 +892,11 @@ void MainWindow::ApplyAssetListDto(const AssetListDto& dto)
 
 	for (const auto& item : dto.items) {
 		const QString name = QString::fromStdString(item.name);
+		const QString guid = QString::fromStdString(item.key);
 		const QString path = QString::fromStdString(item.path);
 		auto* row = new QTreeWidgetItem(QStringList() << name);
 		row->setFlags(row->flags() & ~Qt::ItemIsEditable);
-		row->setData(0, Qt::UserRole, path);
+		row->setData(0, Qt::UserRole, guid);
 		row->setToolTip(0, path);
 		if (item.space.empty())
 			asset_tree_->addTopLevelItem(row);
@@ -848,21 +907,21 @@ void MainWindow::ApplyAssetListDto(const AssetListDto& dto)
 	asset_tree_->blockSignals(blocked);
 }
 
-void MainWindow::ApplyRefreshDetails(const QString& data)
+void MainWindow::ApplyDetails(const QString& data)
 {
 	const QString kind = QJsonDocument::fromJson(data.toUtf8()).object()
 		.value(QStringLiteral("kind")).toString();
 	if (kind == QLatin1String("node")) {
-		NodeDetailsDto node_dto;
-		if (ParseNodeDetailsDto(data.toStdString(), node_dto)) {
+		NodeDetails node_dto;
+		if (ParseNode(data.toStdString(), node_dto)) {
 			selected_var_guid_.clear();
 			FillNodeDetails(node_dto);
 		}
 		return;
 	}
 	if (kind == QLatin1String("var")) {
-		VarDetailsDto var_dto;
-		if (ParseVarDetailsDto(data.toStdString(), var_dto)) {
+		VarDetails var_dto;
+		if (ParseVar(data.toStdString(), var_dto)) {
 			last_node_details_.reset();
 			selected_var_guid_ = QString::fromStdString(var_dto.guid);
 			FillVarDetails(var_dto);
@@ -872,153 +931,6 @@ void MainWindow::ApplyRefreshDetails(const QString& data)
 	last_node_details_.reset();
 	selected_var_guid_.clear();
 	FillBlueprintDetails(data);
-}
-
-void MainWindow::ApplyResponse(Action act, const QString& data)
-{
-	const auto obj = QJsonDocument::fromJson(data.toUtf8()).object();
-	if (!obj.value(QStringLiteral("ok")).toBool(true))
-		return;
-
-	const QString guid = obj.value(QStringLiteral("guid")).toString();
-	const QString name = obj.value(QStringLiteral("name")).toString();
-	const QString type = obj.value(QStringLiteral("type")).toString();
-
-	switch (act) {
-	case Action::AddVar: {
-		if (guid.isEmpty() || !var_tree_)
-			break;
-		if (FindTreeItem(var_tree_, guid))
-			break;
-		VarItemDto item;
-		item.guid = guid.toStdString();
-		item.name = name.toStdString();
-		item.type_name = type.toStdString();
-		blueprint_dto_.vars.push_back(item);
-		auto* row = new QTreeWidgetItem(QStringList() << name);
-		row->setFlags(row->flags() | Qt::ItemIsEditable);
-		row->setData(0, Qt::UserRole, guid);
-		row->setData(0, Qt::UserRole + 1, name);
-		row->setForeground(0, QBrush(PinColor(type, DtoPinKind::Data)));
-		row->setToolTip(0, QStringLiteral("变量  %1 : %2\nF2 重命名，Delete 删除").arg(name, type));
-		var_tree_->addTopLevelItem(row);
-		var_tree_->setCurrentItem(row);
-		if (pending_edit_var_) {
-			pending_edit_var_ = false;
-			EditNewItem(var_tree_, guid);
-		}
-		break;
-	}
-	case Action::DelVar:
-		RemoveTreeItem(var_tree_, guid);
-		blueprint_dto_.vars.erase(
-			std::remove_if(blueprint_dto_.vars.begin(), blueprint_dto_.vars.end(),
-				[&](const VarItemDto& v) { return v.guid == guid.toStdString(); }),
-			blueprint_dto_.vars.end());
-		break;
-	case Action::RenameVar:
-		RenameTreeItem(var_tree_, guid, name);
-		if (auto* item = FindTreeItem(var_tree_, guid)) {
-			const QString type_name = [&]() {
-				for (const auto& v : blueprint_dto_.vars) {
-					if (v.guid == guid.toStdString())
-						return QString::fromStdString(v.type_name);
-				}
-				return QString();
-			}();
-			item->setToolTip(0, QStringLiteral("变量  %1 : %2\nF2 重命名，Delete 删除").arg(name, type_name));
-		}
-		for (auto& v : blueprint_dto_.vars) {
-			if (v.guid == guid.toStdString())
-				v.name = name.toStdString();
-		}
-		break;
-	case Action::SetVarType:
-		for (auto& v : blueprint_dto_.vars) {
-			if (v.guid != guid.toStdString())
-				continue;
-			v.type_name = type.toStdString();
-			if (auto* item = FindTreeItem(var_tree_, guid)) {
-				item->setForeground(0, QBrush(PinColor(type, DtoPinKind::Data)));
-				item->setToolTip(0, QStringLiteral("变量  %1 : %2\nF2 重命名，Delete 删除")
-					.arg(QString::fromStdString(v.name), type));
-			}
-			break;
-		}
-		break;
-	case Action::AddFlow: {
-		if (guid.isEmpty() || !function_tree_)
-			break;
-		if (!FindTreeItem(function_tree_, guid)) {
-			FlowItemDto item;
-			item.guid = guid.toStdString();
-			item.name = name.toStdString();
-			blueprint_dto_.flows.push_back(item);
-			auto* row = new QTreeWidgetItem(QStringList() << name);
-			row->setFlags(row->flags() | Qt::ItemIsEditable);
-			row->setData(0, Qt::UserRole, guid);
-			row->setData(0, Qt::UserRole + 1, name);
-			row->setForeground(0, QBrush(QColor(140, 210, 140)));
-			row->setToolTip(0, QStringLiteral("函数  %1\n拖到图表可放置调用节点\nF2 重命名，Delete 删除").arg(name));
-			function_tree_->addTopLevelItem(row);
-			function_tree_->setCurrentItem(row);
-		}
-		blueprint_dto_.current_flow_guid = guid.toStdString();
-		blueprint_dto_.current_flow_name = name.toStdString();
-		RefreshGraphTabs();
-		UpdateBreadcrumb();
-		if (pending_edit_flow_) {
-			pending_edit_flow_ = false;
-			EditNewItem(function_tree_, guid);
-		}
-		break;
-	}
-	case Action::DelFlow:
-		RemoveTreeItem(function_tree_, guid);
-		blueprint_dto_.flows.erase(
-			std::remove_if(blueprint_dto_.flows.begin(), blueprint_dto_.flows.end(),
-				[&](const FlowItemDto& f) { return f.guid == guid.toStdString(); }),
-			blueprint_dto_.flows.end());
-		{
-			const QString current = obj.value(QStringLiteral("current")).toString();
-			if (!current.isEmpty()) {
-				blueprint_dto_.current_flow_guid = current.toStdString();
-				for (const auto& f : blueprint_dto_.flows) {
-					if (f.guid == current.toStdString()) {
-						blueprint_dto_.current_flow_name = f.name;
-						break;
-					}
-				}
-			}
-		}
-		RefreshGraphTabs();
-		UpdateBreadcrumb();
-		break;
-	case Action::RenameFlow:
-		RenameTreeItem(function_tree_, guid, name);
-		if (auto* item = FindTreeItem(function_tree_, guid))
-			item->setToolTip(0, QStringLiteral("函数  %1\n拖到图表可放置调用节点\nF2 重命名，Delete 删除").arg(name));
-		for (auto& f : blueprint_dto_.flows) {
-			if (f.guid != guid.toStdString())
-				continue;
-			f.name = name.toStdString();
-			if (blueprint_dto_.current_flow_guid == f.guid)
-				blueprint_dto_.current_flow_name = f.name;
-			break;
-		}
-		RefreshGraphTabs();
-		UpdateBreadcrumb();
-		break;
-	case Action::SelectFlow:
-		blueprint_dto_.current_flow_guid = guid.toStdString();
-		if (!name.isEmpty())
-			blueprint_dto_.current_flow_name = name.toStdString();
-		RefreshGraphTabs();
-		UpdateBreadcrumb();
-		break;
-	default:
-		break;
-	}
 }
 
 void MainWindow::ClearDetailsForm()
@@ -1085,7 +997,7 @@ void MainWindow::FillBlueprintDetails(const QString& json)
 	AddDetailRow(QStringLiteral("Guid"), guid);
 }
 
-void MainWindow::FillNodeDetails(const NodeDetailsDto& dto)
+void MainWindow::FillNodeDetails(const NodeDetails& dto)
 {
 	if (details_busy_ || !details_form_) return;
 	details_busy_ = true;
@@ -1104,7 +1016,7 @@ void MainWindow::FillNodeDetails(const NodeDetailsDto& dto)
 		AddDetailRow(QStringLiteral("Kind"), QString::fromStdString(dto.kind_label));
 	AddDetailRow(QStringLiteral("Guid"), QString::fromStdString(dto.node_guid));
 
-	auto add_pin_rows = [this](const QString& title, DtoPinDir dir, const std::vector<PinDto>& pins) {
+	auto add_pin_rows = [this](const QString& title, PinDir dir, const std::vector<Pin>& pins) {
 		bool any = false;
 		for (const auto& pin : pins) {
 			if (pin.direction != dir)
@@ -1115,10 +1027,10 @@ void MainWindow::FillNodeDetails(const NodeDetailsDto& dto)
 				details_form_->addRow(label);
 				any = true;
 			}
-			const QString kind = pin.kind == DtoPinKind::Exec
+			const QString kind = pin.kind == PinKind::Exec
 				? QStringLiteral("Exec") : QStringLiteral("Data");
 			QString value = QString::fromStdString(pin.type_name);
-			if (pin.kind == DtoPinKind::Data && !pin.value_text.empty()) {
+			if (pin.kind == PinKind::Data && !pin.value_text.empty()) {
 				if (!value.isEmpty())
 					value += QStringLiteral("  ");
 				value += QString::fromStdString(pin.value_text);
@@ -1134,8 +1046,8 @@ void MainWindow::FillNodeDetails(const NodeDetailsDto& dto)
 			AddDetailRow(name, value);
 		}
 	};
-	add_pin_rows(QStringLiteral("输入"), DtoPinDir::In, dto.pins);
-	add_pin_rows(QStringLiteral("输出"), DtoPinDir::Out, dto.pins);
+	add_pin_rows(QStringLiteral("输入"), PinDir::In, dto.pins);
+	add_pin_rows(QStringLiteral("输出"), PinDir::Out, dto.pins);
 
 	if (!dto.can_edit_params)
 		return;
@@ -1232,7 +1144,7 @@ void MainWindow::FillNodeDetails(const NodeDetailsDto& dto)
 	details_form_->addRow(section);
 }
 
-void MainWindow::FillVarDetails(const VarDetailsDto& dto)
+void MainWindow::FillVarDetails(const VarDetails& dto)
 {
 	if (details_busy_ || !details_form_) return;
 	details_busy_ = true;
@@ -1258,7 +1170,7 @@ void MainWindow::FillVarDetails(const VarDetailsDto& dto)
 	details_form_->addRow(QStringLiteral("Type"), type_combo);
 
 	const QString value_text = QString::fromStdString(dto.value_text);
-	if (dto.edit_kind == DtoEditKind::Bool) {
+	if (dto.edit_kind == EditKind::Bool) {
 		auto* box = new QCheckBox;
 		box->setChecked(value_text == QStringLiteral("true")
 			|| value_text == QStringLiteral("1")
@@ -1273,11 +1185,11 @@ void MainWindow::FillVarDetails(const VarDetailsDto& dto)
 			});
 		});
 		details_form_->addRow(QStringLiteral("Default Value"), box);
-	} else if (dto.edit_kind != DtoEditKind::None || !value_text.isEmpty()) {
+	} else if (dto.edit_kind != EditKind::None || !value_text.isEmpty()) {
 		auto* edit = new QLineEdit(value_text);
-		if (dto.edit_kind == DtoEditKind::String)
+		if (dto.edit_kind == EditKind::String)
 			edit->setPlaceholderText(QStringLiteral("\"\""));
-		else if (dto.edit_kind == DtoEditKind::None)
+		else if (dto.edit_kind == EditKind::None)
 			edit->setPlaceholderText(QStringLiteral("{ }"));
 		connect(edit, &QLineEdit::editingFinished, this, [this, guid, edit]() {
 			const QString text = edit->text();
@@ -1318,9 +1230,32 @@ void MainWindow::EditNewItem(QTreeWidget* tree, const QString& guid)
 void MainWindow::OnAssetDoubleClicked(QTreeWidgetItem* item, int)
 {
 	if (!item) return;
-	const QString path = item->data(0, Qt::UserRole).toString();
-	if (path.isEmpty()) return;
-	Dispatch(Action::OpenBP, QJsonObject{{QStringLiteral("path"), path}});
+	const QString guid = item->data(0, Qt::UserRole).toString();
+	if (guid.isEmpty()) return;
+	Dispatch(Action::OpenBP, QJsonObject{{QStringLiteral("guid"), guid}});
+}
+
+void MainWindow::OnAssetMenu(const QPoint& pos)
+{
+	if (!asset_tree_) return;
+	auto* item = asset_tree_->itemAt(pos);
+	if (!item || item->data(0, Qt::UserRole).toString().isEmpty())
+		return;
+	asset_tree_->setCurrentItem(item);
+	QMenu menu(this);
+	menu.addAction(QStringLiteral("打开"), this, [this, item]() { OnAssetDoubleClicked(item, 0); });
+	menu.addAction(QStringLiteral("删除"), this, &MainWindow::OnDeleteAsset);
+	menu.exec(asset_tree_->viewport()->mapToGlobal(pos));
+}
+
+void MainWindow::OnDeleteAsset()
+{
+	if (!asset_tree_) return;
+	auto* item = asset_tree_->currentItem();
+	if (!item) return;
+	const QString guid = item->data(0, Qt::UserRole).toString();
+	if (guid.isEmpty()) return;
+	Dispatch(Action::DeleteBP, QJsonObject{{QStringLiteral("guid"), guid}});
 }
 
 void MainWindow::OnNewBlueprint()
@@ -1362,8 +1297,8 @@ void MainWindow::OnAddVar()
 
 void MainWindow::OnAddExit()
 {
-	if (graph_view_)
-		graph_view_->AddExitAtCenter();
+	if (auto* view = CurrentGraphView())
+		view->AddExitAtCenter();
 }
 
 void MainWindow::OnRunFlow()
@@ -1463,18 +1398,22 @@ void MainWindow::OnFunctionDropped(const QString& guid, const QPointF& scene_pos
 
 void MainWindow::OnPaletteDoubleClicked(QTreeWidgetItem* item, int)
 {
-	if (!item || !graph_view_) return;
+	auto* view = CurrentGraphView();
+	if (!item || !view) return;
 	const QString key = item->data(0, Qt::UserRole).toString();
 	if (key.isEmpty()) return;
-	const QPointF center = graph_view_->mapToScene(graph_view_->viewport()->rect().center());
-	graph_view_->PlaceCaller(key, center);
+	const QPointF center = view->mapToScene(view->viewport()->rect().center());
+	view->PlaceCaller(key, center);
 }
 
 void MainWindow::OnGraphTabChanged(int index)
 {
 	if (index < 0 || !graph_tabs_) return;
 	const QString guid = graph_tabs_->tabData(index).toString();
-	if (guid.isEmpty() || guid.toStdString() == blueprint_dto_.current_flow_guid)
+	if (guid.isEmpty())
+		return;
+	ShowFlowView(guid, false);
+	if (guid.toStdString() == blueprint_dto_.current_flow_guid)
 		return;
 	Dispatch(Action::SelectFlow, QJsonObject{{QStringLiteral("guid"), guid}});
 }
@@ -1630,7 +1569,7 @@ void MainWindow::OnNodeContextMenu(const QString& node_guid, const QPoint& globa
 
 	bool is_entry = false;
 	bool is_exit = false;
-	std::vector<ParamDto> params;
+	std::vector<Param> params;
 
 	if (last_node_details_ && last_node_details_->node_guid == node_guid.toStdString()) {
 		is_entry = last_node_details_->is_entry;
@@ -1680,6 +1619,10 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 			}
 			if (watched == var_tree_) {
 				OnDeleteVariable();
+				return true;
+			}
+			if (watched == asset_tree_) {
+				OnDeleteAsset();
 				return true;
 			}
 		}

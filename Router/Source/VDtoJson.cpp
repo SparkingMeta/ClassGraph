@@ -1,28 +1,28 @@
-﻿#include "VDtoJson.h"
+#include "VDtoJson.h"
 
 #include <nlohmann/json.hpp>
 
 namespace CG::Router {
 namespace {
 
-	PinDto ParsePin(const nlohmann::json& j)
+	Pin ParsePin(const nlohmann::json& j)
 	{
-		PinDto p;
+		Pin p;
 		p.id = j.value("id", "");
 		p.name = j.value("name", "");
-		p.kind = static_cast<DtoPinKind>(j.value("kind", 1));
-		p.direction = static_cast<DtoPinDir>(j.value("direction", 0));
+		p.kind = static_cast<PinKind>(j.value("kind", 1));
+		p.direction = static_cast<PinDir>(j.value("direction", 0));
 		p.type_name = j.value("type_name", "");
 		p.connected = j.value("connected", false);
 		p.editable = j.value("editable", false);
-		p.edit_kind = static_cast<DtoEditKind>(j.value("edit_kind", 0));
+		p.edit_kind = static_cast<EditKind>(j.value("edit_kind", 0));
 		p.value_text = j.value("value_text", "");
 		return p;
 	}
 
-	NodeDto ParseNode(const nlohmann::json& j)
+	Node ParseNode(const nlohmann::json& j)
 	{
-		NodeDto n;
+		Node n;
 		n.guid = j.value("guid", "");
 		n.name = j.value("name", "");
 		n.title = j.value("title", "");
@@ -40,9 +40,9 @@ namespace {
 		return n;
 	}
 
-	LineDto ParseLine(const nlohmann::json& j)
+	Line ParseLine(const nlohmann::json& j)
 	{
-		LineDto l;
+		Line l;
 		l.id = j.value("id", "");
 		l.from_pin_id = j.value("from_pin_id", "");
 		l.to_pin_id = j.value("to_pin_id", "");
@@ -52,7 +52,7 @@ namespace {
 
 } // namespace
 
-bool ParseGraphDto(const std::string& json, GraphDto& out)
+bool ParseGraph(const std::string& json, Graph& out)
 {
 	try {
 		const auto j = nlohmann::json::parse(json);
@@ -75,7 +75,27 @@ bool ParseGraphDto(const std::string& json, GraphDto& out)
 	}
 }
 
-bool ParseBlueprintDto(const std::string& json, BlueprintDto& out)
+bool ParseNodeDto(const std::string& json, Node& out)
+{
+	try {
+		out = ParseNode(nlohmann::json::parse(json));
+		return !out.guid.empty();
+	} catch (...) {
+		return false;
+	}
+}
+
+bool ParseLineDto(const std::string& json, Line& out)
+{
+	try {
+		out = ParseLine(nlohmann::json::parse(json));
+		return !out.id.empty() || (!out.from_pin_id.empty() && !out.to_pin_id.empty());
+	} catch (...) {
+		return false;
+	}
+}
+
+bool ParseBlueprint(const std::string& json, Blueprint& out)
 {
 	try {
 		const auto j = nlohmann::json::parse(json);
@@ -104,14 +124,14 @@ bool ParseBlueprintDto(const std::string& json, BlueprintDto& out)
 	}
 }
 
-bool ParsePaletteDto(const std::string& json, PaletteDto& out)
+bool ParsePalette(const std::string& json, Palette& out)
 {
 	try {
 		const auto j = nlohmann::json::parse(json);
 		out = {};
 		if (j.contains("items") && j["items"].is_array()) {
 			for (const auto& c : j["items"]) {
-				CallerItemDto item;
+				CallerItem item;
 				item.key = c.value("key", "");
 				item.name = c.value("name", "");
 				item.group = c.value("group", "");
@@ -126,7 +146,7 @@ bool ParsePaletteDto(const std::string& json, PaletteDto& out)
 	}
 }
 
-bool ParseNodeDetailsDto(const std::string& json, NodeDetailsDto& out)
+bool ParseNode(const std::string& json, NodeDetails& out)
 {
 	try {
 		const auto j = nlohmann::json::parse(json);
@@ -156,7 +176,7 @@ bool ParseNodeDetailsDto(const std::string& json, NodeDetailsDto& out)
 	}
 }
 
-bool ParseVarDetailsDto(const std::string& json, VarDetailsDto& out)
+bool ParseVar(const std::string& json, VarDetails& out)
 {
 	try {
 		const auto j = nlohmann::json::parse(json);
@@ -165,7 +185,7 @@ bool ParseVarDetailsDto(const std::string& json, VarDetailsDto& out)
 		out.name = j.value("name", "");
 		out.type_name = j.value("type_name", "");
 		out.value_text = j.value("value_text", "");
-		out.edit_kind = static_cast<DtoEditKind>(j.value("edit_kind", 0));
+		out.edit_kind = static_cast<EditKind>(j.value("edit_kind", 0));
 		if (j.contains("type_names") && j["type_names"].is_array()) {
 			for (const auto& t : j["type_names"])
 				out.type_names.push_back(t.get<std::string>());
@@ -176,7 +196,7 @@ bool ParseVarDetailsDto(const std::string& json, VarDetailsDto& out)
 	}
 }
 
-bool ParseAssetListDto(const std::string& json, AssetListDto& out)
+bool ParseAssets(const std::string& json, AssetList& out)
 {
 	try {
 		const auto j = nlohmann::json::parse(json);
@@ -184,13 +204,13 @@ bool ParseAssetListDto(const std::string& json, AssetListDto& out)
 		out.asset_root = j.value("asset_root", "");
 		if (j.contains("items") && j["items"].is_array()) {
 			for (const auto& it : j["items"]) {
-				AssetItemDto item;
+				AssetItem item;
 				item.path = it.value("path", "");
 				item.space = it.value("space", "");
 				item.name = it.value("name", "");
 				item.key = it.value("key", "");
 				if (item.key.empty() && !item.space.empty() && !item.name.empty())
-					item.key = item.space + "::" + item.name;
+				item.key = item.space + ":" + item.name;
 				out.items.push_back(std::move(item));
 			}
 		}

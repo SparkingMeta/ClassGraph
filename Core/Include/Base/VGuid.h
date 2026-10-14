@@ -2,7 +2,7 @@
 
 #include "VCore.h"
 
-std::string GenerateGUID(const std::string& guid = "");
+std::string CORE_API GenerateGUID(const std::string& guid = "");
 
 struct SGuid : Struct {
 	// Éú³ÉÐÂ GUID

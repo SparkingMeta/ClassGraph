@@ -98,8 +98,6 @@ void CG::Core::VDataPin::Update()
 		if (GetDirect() != EDirect::In)
 			break;
 
-		auto token = GetOwner()->GetToken();
-
 		auto line = GetLine();
 		if(!line) break;
 
@@ -111,7 +109,7 @@ void CG::Core::VDataPin::Update()
 
 		auto pure = from_node->IsPure();
 		if(!pure.has_value()) break;
-		if(pure.value()) from_node->Work(token);
+		if(pure.value()) from_node->Work();
 
 		auto from_frame = from_pin->GetFrame();
 		if(!from_frame) break;

@@ -29,14 +29,12 @@ std::shared_ptr<VNode> CG::Core::VNode::Make(const std::shared_ptr<ACaller>& cal
 	return node;
 }
 
-Result CG::Core::VNode::Work(const std::string& token)
+Result CG::Core::VNode::Work()
 {
 	int code = -1, index = -1;
 	bool loop = false;
 	do {
 		if (!caller_) break;
-
-		token_ = token;
 
 		Update();
 

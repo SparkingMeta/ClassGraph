@@ -11,6 +11,6 @@ namespace CG::Core {
 		virtual std::shared_ptr<AGraph> GetGraph() const = 0;
 		virtual std::shared_ptr<AScript> GetScript() const = 0;
 		virtual const FlowMeta& GetFlowMeta() const = 0;
-		virtual int Run(const std::string& token) = 0;
+		virtual int Run() = 0;
 	};
 }

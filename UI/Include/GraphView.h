@@ -27,14 +27,14 @@ using namespace CG::Router;
 
 class PinGraphicsItem : public QGraphicsItem {
 public:
-	PinGraphicsItem(const PinDto& pin, NodeGraphicsItem* parent);
+	PinGraphicsItem(const Pin& pin, NodeGraphicsItem* parent);
 
-	const PinDto& Pin() const { return pin_; }
-	void SetPin(const PinDto& pin) { pin_ = pin; }
+	const Pin& GetPin() const { return pin_; }
+	void SetPin(const Pin& pin) { pin_ = pin; }
 	NodeGraphicsItem* OwnerNode() const;
 	QPointF CenterInScene() const;
-	bool IsExec() const { return pin_.kind == DtoPinKind::Exec; }
-	bool IsOutput() const { return pin_.direction == DtoPinDir::Out; }
+	bool IsExec() const { return pin_.kind == PinKind::Exec; }
+	bool IsOutput() const { return pin_.direction == PinDir::Out; }
 	bool IsConnected() const { return pin_.connected; }
 	QColor Color() const;
 
@@ -43,18 +43,18 @@ public:
 	QPainterPath shape() const override;
 
 private:
-	PinDto pin_;
+	Pin pin_;
 };
 
 class NodeGraphicsItem : public QGraphicsObject {
 public:
-	explicit NodeGraphicsItem(const NodeDto& node, QGraphicsItem* parent = nullptr);
+	explicit NodeGraphicsItem(const Node& node, QGraphicsItem* parent = nullptr);
 
-	const NodeDto& Node() const { return node_; }
+	const Node& GetNode() const { return node_; }
 	QString Guid() const { return QString::fromStdString(node_.guid); }
 	PinGraphicsItem* FindPinItem(const QString& pin_id) const;
-	void ApplyDto(const NodeDto& node);
-	void SyncFromDto(const NodeDto& node);
+	void ApplyDto(const Node& node);
+	void SyncFromDto(const Node& node);
 	void SyncEditors();
 	bool HitAddPin(const QPointF& scene_pos) const;
 
@@ -74,9 +74,9 @@ private:
 	QString Title() const;
 	QRectF AddPinRect() const;
 	bool IsSwitch() const;
-	static bool SamePinLayout(const NodeDto& a, const NodeDto& b);
+	static bool SamePinLayout(const Node& a, const Node& b);
 
-	NodeDto node_;
+	Node node_;
 	std::vector<PinGraphicsItem*> pins_;
 	std::vector<PinEditor> editors_;
 	qreal width_{ 150 };
@@ -87,7 +87,7 @@ private:
 class LineGraphicsItem : public QGraphicsPathItem {
 public:
 	LineGraphicsItem(PinGraphicsItem* from, PinGraphicsItem* to,
-		const LineDto& line, QGraphicsItem* parent = nullptr);
+		const Line& line, QGraphicsItem* parent = nullptr);
 	void UpdatePath();
 	PinGraphicsItem* From() const { return from_; }
 	PinGraphicsItem* To() const { return to_; }
@@ -99,7 +99,7 @@ public:
 private:
 	PinGraphicsItem* from_{};
 	PinGraphicsItem* to_{};
-	LineDto line_;
+	Line line_;
 };
 
 class GraphView : public QGraphicsView {
@@ -107,9 +107,17 @@ class GraphView : public QGraphicsView {
 public:
 	explicit GraphView(QWidget* parent = nullptr);
 
-	void ApplyGraph(const GraphDto& graph);
+	void ApplyGraph(const Graph& graph);
+	void SetFlowGuid(const QString& guid);
+	QString FlowGuid() const;
+	bool GraphLoaded() const;
+	void UpsertNode(const Node& node);
+	void RemoveNode(const QString& guid);
+	void UpsertLine(const Line& line);
+	void RemoveLine(const QString& id);
+	void RemoveLinesOfPin(const QString& pin_id);
 	void SetSink(std::function<void(const Message&)> sink);
-	void SetPalette(const std::vector<CallerItemDto>& callers);
+	void SetPalette(const std::vector<CallerItem>& callers);
 	QString SelectedNodeGuid() const;
 
 	void DeleteSelected();
@@ -144,20 +152,21 @@ private:
 	bool EditorAt(const QPoint& view_pos) const;
 	void ClearTempLine();
 	void ClearLineItems();
-	void RebuildAll(const GraphDto& graph, const std::unordered_set<std::string>& old_guids,
+	void RebuildAll(const Graph& graph, const std::unordered_set<std::string>& old_guids,
 		const QString& pending);
-	void ApplyGraphIncremental(const GraphDto& graph, const std::unordered_set<std::string>& old_guids,
+	void ApplyGraphIncremental(const Graph& graph, const std::unordered_set<std::string>& old_guids,
 		const QString& pending);
-	void AddLineItem(PinGraphicsItem* from, PinGraphicsItem* to, const LineDto& line);
+	void AddLineItem(PinGraphicsItem* from, PinGraphicsItem* to, const Line& line);
 	void RebuildLinesFromGraph();
 	std::unordered_map<std::string, NodeGraphicsItem*> NodeItemsByGuid() const;
 	void ShowSpawnMenu(const QPoint& global_pos, const QPointF& scene_pos,
 		const QString& connect_from_pin = {});
 	void DispatchConnect(const QString& from_pin, const QString& to_pin);
-	void TryConnectAfterSpawn(const QString& from_pin, const NodeDto* hint_unused);
+	void TryConnectAfterSpawn(const QString& from_pin, const Node* hint_unused);
 
-	GraphDto graph_;
-	std::vector<CallerItemDto> palette_;
+	Graph graph_;
+	bool graph_loaded_{ false };
+	std::vector<CallerItem> palette_;
 	QGraphicsScene* scene_{};
 	PinGraphicsItem* drag_pin_{};
 	QGraphicsPathItem* temp_line_{};

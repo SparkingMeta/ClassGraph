@@ -32,9 +32,9 @@ namespace CG::Router {
 		return json[key].get<double>();
 	}
 
-	inline Message MakeReply(const Message& req, nlohmann::json body)
+	inline Message MakeReply(Action act, const std::string& token, const std::string& body)
 	{
-		return MakeMessage(static_cast<Action>(req.act), req.token, body.dump());
+		return MakeMessage(act, token, body);
 	}
 
 }

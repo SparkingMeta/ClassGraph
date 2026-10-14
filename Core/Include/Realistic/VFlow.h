@@ -10,7 +10,7 @@ namespace CG::Core {
 		std::shared_ptr<AGraph> GetGraph() const override;
 		std::shared_ptr<AScript> GetScript() const override;
 		const FlowMeta& GetFlowMeta() const override;
-		int Run(const std::string& token) override;
+		int Run() override;
 
 		void BindScript(const std::shared_ptr<AScript>& script);
 

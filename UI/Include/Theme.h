@@ -23,9 +23,9 @@ namespace CG::Ui{
 	inline QColor TextMuted() { return QColor(154, 154, 154); }
 	inline QColor ExecWhite() { return QColor(240, 240, 240); }
 
-	inline QColor PinColor(const QString& type_name, DtoPinKind kind)
+	inline QColor PinColor(const QString& type_name, PinKind kind)
 	{
-		if (kind == DtoPinKind::Exec || type_name.isEmpty())
+		if (kind == PinKind::Exec || type_name.isEmpty())
 			return ExecWhite();
 		if (type_name == QLatin1String("bool")) return QColor(220, 48, 48);
 		if (type_name == QLatin1String("int") || type_name == QLatin1String("int64"))

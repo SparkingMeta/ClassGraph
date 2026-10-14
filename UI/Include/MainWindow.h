@@ -4,6 +4,7 @@
 #include "Export.h"
 #include "IRouter.h"
 #include "VDto.h"
+#include "bus.h"
 #include <functional>
 
 #include <QJsonObject>
@@ -15,6 +16,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class GraphView;
@@ -31,6 +33,7 @@ class QLineEdit;
 class QDockWidget;
 class QToolButton;
 class QFrame;
+class QStackedWidget;
 
 using namespace CG::Router;
 
@@ -41,9 +44,62 @@ public:
 	~MainWindow() override;
 	void Notify(const Message& msg);
 	void SetSink(std::function<void(const Message&)> sink);
+
 private:
 	void Dispatch(Action action, const QJsonObject& body = {});
-	
+	void RegisterAction();
+	void RegisterAsset();
+	void RegisterFlow();
+	void RegisterVar();
+	void RegisterGraph();
+	void RegisterType();
+	void Print(const Message& msg);
+
+	void GetBlueprint(const Message& msg);
+	void GetAssets(const Message& msg);
+	void LoadAssets(const Message& msg);
+	void OpenBP(const Message& msg);
+	void CloseBP(const Message& msg);
+	void RenameBP(const Message& msg);
+	void SetSpace(const Message& msg);
+	void CreateBP(const Message& msg);
+	void DeleteBP(const Message& msg);
+
+	void GetGraph(const Message& msg);
+	void AddFlow(const Message& msg);
+	void DelFlow(const Message& msg);
+	void RenameFlow(const Message& msg);
+	void SelectFlow(const Message& msg);
+
+	void AddVar(const Message& msg);
+	void DelVar(const Message& msg);
+	void RenameVar(const Message& msg);
+	void SetVarType(const Message& msg);
+	void SetVarValue(const Message& msg);
+	void SelectVar(const Message& msg);
+	void PlaceGet(const Message& msg);
+	void PlaceSet(const Message& msg);
+
+	void GetDetails(const Message& msg);
+	void AddNode(const Message& msg);
+	void DelNode(const Message& msg);
+	void AddExit(const Message& msg);
+	void ConnectPin(const Message& msg);
+	void DisconnectPin(const Message& msg);
+	void DisconnectLine(const Message& msg);
+	void SetPinValue(const Message& msg);
+	void SelectNode(const Message& msg);
+	void AddParam(const Message& msg);
+	void DelParam(const Message& msg);
+	void RenameParam(const Message& msg);
+	void SetParamType(const Message& msg);
+
+	void GetPalette(const Message& msg);
+	void GenerateCode(const Message& msg);
+	void CompileType(const Message& msg);
+	void LoadType(const Message& msg);
+	void UnloadType(const Message& msg);
+
 private slots:
 	void OnNewBlueprint();
 	void OnAddFlow();
@@ -69,31 +125,41 @@ private slots:
 	void OnVarTypeChosen(int index);
 	void OnNodeContextMenu(const QString& node_guid, const QPoint& global_pos);
 	void OnAssetDoubleClicked(QTreeWidgetItem* item, int column);
+	void OnAssetMenu(const QPoint& pos);
+	void OnDeleteAsset();
 
 private:
 	void BuildUi();
 	void AppendLog(const QString& text);
 	void ClearLog();
-	void ApplyBlueprintDto(const BlueprintDto& dto);
-	void ApplyPaletteDto(const PaletteDto& dto);
-	void ApplyGraphDto(const GraphDto& dto);
-	void ApplyAssetListDto(const AssetListDto& dto);
-	void ApplyRefreshDetails(const QString& data);
-	void ApplyResponse(Action act, const QString& data);
+	void ApplyBlueprintDto(const Blueprint& dto);
+	void ApplyPaletteDto(const Palette& dto);
+	void ApplyGraphDto(const Graph& dto);
+	void ApplyAssetListDto(const AssetList& dto);
+	void ApplyDetails(const QString& data);
 	void FillBlueprintDetails(const QString& json);
-	void FillNodeDetails(const NodeDetailsDto& dto);
-	void FillVarDetails(const VarDetailsDto& dto);
+	void FillNodeDetails(const NodeDetails& dto);
+	void FillVarDetails(const VarDetails& dto);
 	void RefreshTypeCombo();
 	void UpdateBreadcrumb();
 	void RefreshGraphTabs();
 	void SetEditorVisible(bool visible);
+	GraphView* CurrentGraphView() const;
+	GraphView* GraphViewOf(const QString& flow_guid) const;
+	GraphView* EnsureGraphView(const QString& flow_guid);
+	void BindGraphView(GraphView* view);
+	void RemoveGraphView(const QString& flow_guid);
+	void ClearGraphViews();
+	void ShowFlowView(const QString& flow_guid, bool load_if_empty);
 	void EditNewItem(QTreeWidget* tree, const QString& guid);
 	void PromptAddNodeParam(const QString& node_guid, bool is_entry);
 	void ClearDetailsForm();
 	void AddDetailRow(const QString& key, const QString& value);
 	bool eventFilter(QObject* watched, QEvent* event) override;
 
-	GraphView* graph_view_{};
+	QStackedWidget* graph_stack_{};
+	std::unordered_map<std::string, GraphView*> graph_views_;
+	std::vector<CallerItem> palette_items_;
 	QFrame* graph_tab_frame_{};
 	QTabBar* graph_tabs_{};
 	QLabel* empty_hint_{};
@@ -113,9 +179,9 @@ private:
 	QToolButton* compile_btn_{};
 	QToolButton* play_btn_{};
 
-	BlueprintDto blueprint_dto_;
-	std::optional<GraphDto> graph_dto_;
-	std::optional<NodeDetailsDto> last_node_details_;
+	Blueprint blueprint_dto_;
+	std::optional<Graph> graph_dto_;
+	std::optional<NodeDetails> last_node_details_;
 	QString selected_var_guid_;
 	bool has_blueprint_{ false };
 	bool renaming_{ false };
@@ -124,4 +190,6 @@ private:
 	bool pending_edit_var_{ false };
 
 	std::function<void(const Message&)> sink_;
+	TBus<TEvent<Action, Message>> handlers_;
+	QString current_asset_guid_;
 };

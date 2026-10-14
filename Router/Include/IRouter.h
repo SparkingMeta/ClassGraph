@@ -18,7 +18,7 @@ namespace CG::Router {
 		RenameBP,
 		SetSpace,
 		OpenBP,
-		ListAssets,
+		LoadAssets,
 		CloseBP,
 
 		AddFlow,
@@ -58,30 +58,26 @@ namespace CG::Router {
 		UnloadType,
 
 		Print,
-		RefreshGraph,
-		RefreshDetails,
-		RefreshPalette,
-		RefreshMyBlueprint,
-		RefreshAssets,
+		GetGraph,
+		GetDetails,
+		GetPalette,
+		GetBlueprint,
+		GetAssets,
 	};
 
-	inline Message MakeMessage(Action action, std::string token = {}, std::string data = {})
+	inline Message MakeMessage(Action action, const std::string& token, const std::string& data)
 	{
 		Message msg;
 		msg.act = static_cast<int>(action);
-		msg.token = std::move(token);
-		if (!data.empty()) {
-			const auto* p = reinterpret_cast<const std::byte*>(data.data());
-			msg.data.assign(p, p + data.size());
-		}
+		msg.token = token;
+		msg.data = data;
+		
 		return msg;
 	}
 
 	inline std::string MessageText(const Message& msg)
 	{
-		if (msg.data.empty())
-			return {};
-		return std::string(reinterpret_cast<const char*>(msg.data.data()), msg.data.size());
+		return msg.data;
 	}
 
 	class ROUTER_API IRouter {
@@ -93,3 +89,10 @@ namespace CG::Router {
 	};
 
 }
+
+template <>
+struct std::hash<CG::Router::Action> {
+	std::size_t operator()(CG::Router::Action id) const noexcept {
+		return static_cast<std::size_t>(id);
+	}
+};

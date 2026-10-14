@@ -1,6 +1,5 @@
 #pragma execution_character_set("utf-8")
 
-#include "AppWindow.h"
 #include "VApi.h"
 #include "classgraph_host_paths.h"
 #include "queue.h"
@@ -60,6 +59,9 @@ int main(int argc, char* argv[])
 	router.SetRise([&](const Message& msg) {
 		rise_queue->Push(Event{ EventId::EI_Rise, msg });
 	});
+	window.SetSink([&](const Message& msg) {
+		sink_queue->Push(Event{ EventId::EI_Sink, msg });
+	});
 
 	bus->Subscribe(EventId::EI_Sink, Handler<Message>{[&router](const Message& msg) {
 		router.DoAction(msg);
@@ -67,10 +69,7 @@ int main(int argc, char* argv[])
 	bus->Subscribe(EventId::EI_Rise, Handler<Message>{[&window](const Message& msg) {
 		window.Notify(msg);
 	}});
-
-	window.SetSink([&](const Message& msg) {
-		sink_queue->Push(Event{ EventId::EI_Sink, msg });
-	});
+	
 	window.showMaximized();
 
 	const int code = app.exec();

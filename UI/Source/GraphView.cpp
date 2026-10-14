@@ -5,6 +5,7 @@
 
 #include "IRouter.h"
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <QAction>
@@ -50,11 +51,11 @@ namespace CG::Ui{
 	constexpr qreal kEditorH = 16;
 	constexpr qreal kAddPinH = 16;
 
-	qreal EditorWidth(DtoEditKind kind)
+	qreal EditorWidth(EditKind kind)
 	{
-		if (kind == DtoEditKind::None)
+		if (kind == EditKind::None)
 			return 0;
-		if (kind == DtoEditKind::Bool)
+		if (kind == EditKind::Bool)
 			return kBoolEditorW;
 		return kEditorW;
 	}
@@ -108,7 +109,7 @@ namespace CG::Ui{
 		return t == QLatin1String("true") || t == QLatin1String("1") || t == QLatin1String("yes");
 	}
 
-	const PinDto* FindPinDto(const NodeDto& node, const QString& pin_id)
+	const Pin* FindPinDto(const Node& node, const QString& pin_id)
 	{
 		const std::string id = pin_id.toStdString();
 		for (const auto& pin : node.pins) {
@@ -133,7 +134,7 @@ namespace CG::Ui{
 
 using namespace CG::Ui;
 
-PinGraphicsItem::PinGraphicsItem(const PinDto& pin, NodeGraphicsItem* parent)
+PinGraphicsItem::PinGraphicsItem(const Pin& pin, NodeGraphicsItem* parent)
 	: QGraphicsItem(parent)
 	, pin_(pin)
 {
@@ -186,7 +187,7 @@ void PinGraphicsItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, 
 	}
 }
 
-NodeGraphicsItem::NodeGraphicsItem(const NodeDto& node, QGraphicsItem* parent)
+NodeGraphicsItem::NodeGraphicsItem(const Node& node, QGraphicsItem* parent)
 	: QGraphicsObject(parent)
 	, node_(node)
 	, width_(kNodeW)
@@ -222,12 +223,12 @@ void NodeGraphicsItem::BuildPins()
 	}
 	editors_.clear();
 
-	std::vector<const PinDto*> ins;
-	std::vector<const PinDto*> outs;
+	std::vector<const Pin*> ins;
+	std::vector<const Pin*> outs;
 	ins.reserve(node_.pins.size());
 	outs.reserve(node_.pins.size());
 	for (const auto& pin : node_.pins) {
-		if (pin.direction == DtoPinDir::Out)
+		if (pin.direction == PinDir::Out)
 			outs.push_back(&pin);
 		else
 			ins.push_back(&pin);
@@ -242,7 +243,7 @@ void NodeGraphicsItem::BuildPins()
 	for (const auto* pin : ins) {
 		const QString label = QString::fromStdString(pin->name);
 		qreal w = pin_fm.horizontalAdvance(label) + 8;
-		if (pin->editable && pin->edit_kind != DtoEditKind::None)
+		if (pin->editable && pin->edit_kind != EditKind::None)
 			w += 4 + EditorWidth(pin->edit_kind);
 		in_col = qMax(in_col, w);
 	}
@@ -250,7 +251,7 @@ void NodeGraphicsItem::BuildPins()
 	for (const auto* pin : outs) {
 		const QString label = QString::fromStdString(pin->name);
 		qreal w = pin_fm.horizontalAdvance(label) + 12;
-		if (pin->editable && pin->edit_kind != DtoEditKind::None)
+		if (pin->editable && pin->edit_kind != EditKind::None)
 			w += 4 + EditorWidth(pin->edit_kind);
 		out_col = qMax(out_col, w);
 	}
@@ -274,13 +275,13 @@ void NodeGraphicsItem::BuildPins()
 		pins_.push_back(item);
 	}
 
-	auto attach_editor = [&](const PinDto* pin, qreal x, qreal y) {
-		if (!pin->editable || pin->edit_kind == DtoEditKind::None)
+	auto attach_editor = [&](const Pin* pin, qreal x, qreal y) {
+		if (!pin->editable || pin->edit_kind == EditKind::None)
 			return;
 
 		const QString pin_id = QString::fromStdString(pin->id);
 		QWidget* widget = nullptr;
-		if (pin->edit_kind == DtoEditKind::Bool) {
+		if (pin->edit_kind == EditKind::Bool) {
 			auto* box = new QCheckBox();
 			box->setObjectName(QStringLiteral("PinEditor"));
 			box->setStyleSheet(CompactStyle());
@@ -299,7 +300,7 @@ void NodeGraphicsItem::BuildPins()
 			edit->setStyleSheet(CompactStyle());
 			edit->setFixedSize(static_cast<int>(kEditorW), static_cast<int>(kEditorH));
 			edit->setText(QString::fromStdString(pin->value_text));
-			if (pin->edit_kind == DtoEditKind::String)
+			if (pin->edit_kind == EditKind::String)
 				edit->setPlaceholderText(QStringLiteral("\"\""));
 			QObject::connect(edit, &QLineEdit::editingFinished, edit, [pin_id, edit]() {
 				DispatchMsg(Action::SetPinValue, QJsonObject{
@@ -320,13 +321,13 @@ void NodeGraphicsItem::BuildPins()
 	};
 
 	for (int i = 0; i < static_cast<int>(ins.size()); ++i) {
-		const PinDto* pin = ins[i];
+		const Pin* pin = ins[i];
 		const qreal label_w = pin_fm.horizontalAdvance(QString::fromStdString(pin->name));
 		const qreal y = kTitleH + i * kRowH + (kRowH - kEditorH) / 2;
 		attach_editor(pin, 12 + label_w + 6, y);
 	}
 	for (int i = 0; i < static_cast<int>(outs.size()); ++i) {
-		const PinDto* pin = outs[i];
+		const Pin* pin = outs[i];
 		const qreal editor_w = EditorWidth(pin->edit_kind);
 		const qreal y = kTitleH + i * kRowH + (kRowH - kEditorH) / 2;
 		attach_editor(pin, width_ - 8 - editor_w, y);
@@ -337,13 +338,13 @@ PinGraphicsItem* NodeGraphicsItem::FindPinItem(const QString& pin_id) const
 {
 	const std::string id = pin_id.toStdString();
 	for (auto* item : pins_) {
-		if (item && item->Pin().id == id)
+		if (item && item->GetPin().id == id)
 			return item;
 	}
 	return nullptr;
 }
 
-void NodeGraphicsItem::ApplyDto(const NodeDto& node)
+void NodeGraphicsItem::ApplyDto(const Node& node)
 {
 	prepareGeometryChange();
 	node_ = node;
@@ -355,7 +356,7 @@ void NodeGraphicsItem::ApplyDto(const NodeDto& node)
 	update();
 }
 
-bool NodeGraphicsItem::SamePinLayout(const NodeDto& a, const NodeDto& b)
+bool NodeGraphicsItem::SamePinLayout(const Node& a, const Node& b)
 {
 	if (a.pins.size() != b.pins.size())
 		return false;
@@ -371,7 +372,7 @@ bool NodeGraphicsItem::SamePinLayout(const NodeDto& a, const NodeDto& b)
 		&& a.is_entry == b.is_entry && a.is_exit == b.is_exit && a.is_pure == b.is_pure;
 }
 
-void NodeGraphicsItem::SyncFromDto(const NodeDto& node)
+void NodeGraphicsItem::SyncFromDto(const Node& node)
 {
 	if (!SamePinLayout(node_, node)) {
 		ApplyDto(node);
@@ -389,7 +390,7 @@ void NodeGraphicsItem::SyncFromDto(const NodeDto& node)
 	for (auto* pin : pins_) {
 		if (!pin)
 			continue;
-		if (const PinDto* dto = FindPinDto(node_, QString::fromStdString(pin->Pin().id)))
+		if (const Pin* dto = FindPinDto(node_, QString::fromStdString(pin->GetPin().id)))
 			pin->SetPin(*dto);
 		pin->update();
 	}
@@ -402,7 +403,7 @@ void NodeGraphicsItem::SyncEditors()
 	for (const auto& editor : editors_) {
 		if (!editor.widget)
 			continue;
-		const PinDto* pin = FindPinDto(node_, editor.pin_id);
+		const Pin* pin = FindPinDto(node_, editor.pin_id);
 		if (!pin)
 			continue;
 		if (auto* box = qobject_cast<QCheckBox*>(editor.widget)) {
@@ -477,10 +478,10 @@ void NodeGraphicsItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*,
 	painter->setFont(QFont(QStringLiteral("Segoe UI"), 8));
 	QFontMetrics pin_fm(painter->font());
 
-	std::vector<const PinDto*> ins;
-	std::vector<const PinDto*> outs;
+	std::vector<const Pin*> ins;
+	std::vector<const Pin*> outs;
 	for (const auto& pin : node_.pins) {
-		if (pin.direction == DtoPinDir::Out)
+		if (pin.direction == PinDir::Out)
 			outs.push_back(&pin);
 		else
 			ins.push_back(&pin);
@@ -496,7 +497,7 @@ void NodeGraphicsItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*,
 	for (int i = 0; i < static_cast<int>(outs.size()); ++i) {
 		painter->setPen(Text());
 		qreal right = width_ - 12;
-		if (outs[i]->editable && outs[i]->edit_kind != DtoEditKind::None)
+		if (outs[i]->editable && outs[i]->edit_kind != EditKind::None)
 			right -= EditorWidth(outs[i]->edit_kind) + 6;
 		painter->drawText(QRectF(12, kTitleH + i * kRowH, right - 12, kRowH),
 			Qt::AlignVCenter | Qt::AlignRight, QString::fromStdString(outs[i]->name));
@@ -532,7 +533,7 @@ QVariant NodeGraphicsItem::itemChange(GraphicsItemChange change, const QVariant&
 }
 
 LineGraphicsItem::LineGraphicsItem(PinGraphicsItem* from, PinGraphicsItem* to,
-	const LineDto& line, QGraphicsItem* parent)
+	const Line& line, QGraphicsItem* parent)
 	: QGraphicsPathItem(parent)
 	, from_(from)
 	, to_(to)
@@ -590,7 +591,7 @@ GraphView::GraphView(QWidget* parent)
 	viewport()->setAcceptDrops(true);
 }
 
-void GraphView::ApplyGraph(const GraphDto& graph)
+void GraphView::ApplyGraph(const Graph& graph)
 {
 	std::unordered_set<std::string> old_guids;
 	old_guids.reserve(graph_.nodes.size());
@@ -601,14 +602,15 @@ void GraphView::ApplyGraph(const GraphDto& graph)
 	pending_connect_from_.clear();
 
 	// Full rebuild only when switching graph identity (open / close / change flow).
-	const bool replace_all = graph.flow_guid != graph_.flow_guid;
+	const bool replace_all = graph.flow_guid != graph_.flow_guid || !graph_loaded_;
 	if (replace_all)
 		RebuildAll(graph, old_guids, pending);
 	else
 		ApplyGraphIncremental(graph, old_guids, pending);
+	graph_loaded_ = true;
 }
 
-void GraphView::RebuildAll(const GraphDto& graph, const std::unordered_set<std::string>& old_guids,
+void GraphView::RebuildAll(const Graph& graph, const std::unordered_set<std::string>& old_guids,
 	const QString& pending)
 {
 	ClearTempLine();
@@ -617,14 +619,14 @@ void GraphView::RebuildAll(const GraphDto& graph, const std::unordered_set<std::
 	graph_ = graph;
 
 	std::unordered_map<std::string, PinGraphicsItem*> pin_map;
-	const NodeDto* spawned = nullptr;
+	const Node* spawned = nullptr;
 
 	for (const auto& node : graph_.nodes) {
 		auto* item = new NodeGraphicsItem(node);
 		scene_->addItem(item);
 		for (auto* pin : item->Pins()) {
 			if (pin)
-				pin_map[pin->Pin().id] = pin;
+				pin_map[pin->GetPin().id] = pin;
 		}
 		if (!pending.isEmpty() && old_guids.count(node.guid) == 0 && !spawned)
 			spawned = &node;
@@ -641,7 +643,7 @@ void GraphView::RebuildAll(const GraphDto& graph, const std::unordered_set<std::
 		TryConnectAfterSpawn(pending, spawned);
 }
 
-void GraphView::ApplyGraphIncremental(const GraphDto& graph,
+void GraphView::ApplyGraphIncremental(const Graph& graph,
 	const std::unordered_set<std::string>& old_guids, const QString& pending)
 {
 	ClearLineItems();
@@ -649,7 +651,7 @@ void GraphView::ApplyGraphIncremental(const GraphDto& graph,
 	auto existing = NodeItemsByGuid();
 	std::unordered_set<std::string> keep;
 	keep.reserve(graph.nodes.size());
-	const NodeDto* spawned = nullptr;
+	const Node* spawned = nullptr;
 
 	for (const auto& node : graph.nodes) {
 		keep.insert(node.guid);
@@ -677,6 +679,184 @@ void GraphView::ApplyGraphIncremental(const GraphDto& graph,
 		TryConnectAfterSpawn(pending, spawned);
 }
 
+void GraphView::SetFlowGuid(const QString& guid)
+{
+	graph_.flow_guid = guid.toStdString();
+}
+
+QString GraphView::FlowGuid() const
+{
+	return QString::fromStdString(graph_.flow_guid);
+}
+
+bool GraphView::GraphLoaded() const
+{
+	return graph_loaded_;
+}
+
+void GraphView::UpsertNode(const Node& node)
+{
+	if (node.guid.empty() || !scene_)
+		return;
+
+	const QString pending = pending_connect_from_;
+	pending_connect_from_.clear();
+
+	auto existing = NodeItemsByGuid();
+	if (auto it = existing.find(node.guid); it != existing.end() && it->second)
+		it->second->SyncFromDto(node);
+	else
+		scene_->addItem(new NodeGraphicsItem(node));
+
+	bool found = false;
+	for (auto& n : graph_.nodes) {
+		if (n.guid != node.guid)
+			continue;
+		n = node;
+		found = true;
+		break;
+	}
+	if (!found)
+		graph_.nodes.push_back(node);
+	graph_loaded_ = true;
+	if (node.is_exit) {
+		graph_.has_exit = true;
+		graph_.exit_node_id = node.guid;
+	}
+
+	const Node* hint = nullptr;
+	for (const auto& n : graph_.nodes) {
+		if (n.guid == node.guid) {
+			hint = &n;
+			break;
+		}
+	}
+	if (!pending.isEmpty() && hint)
+		TryConnectAfterSpawn(pending, hint);
+}
+
+void GraphView::RemoveNode(const QString& guid)
+{
+	if (guid.isEmpty() || !scene_)
+		return;
+	const std::string id = guid.toStdString();
+	auto existing = NodeItemsByGuid();
+	auto it = existing.find(id);
+	if (it == existing.end() || !it->second)
+		return;
+
+	std::vector<QString> pin_ids;
+	for (auto* pin : it->second->Pins()) {
+		if (pin)
+			pin_ids.push_back(QString::fromStdString(pin->GetPin().id));
+	}
+	for (const auto& pin_id : pin_ids)
+		RemoveLinesOfPin(pin_id);
+
+	scene_->removeItem(it->second);
+	delete it->second;
+
+	graph_.nodes.erase(
+		std::remove_if(graph_.nodes.begin(), graph_.nodes.end(),
+			[&](const Node& n) { return n.guid == id; }),
+		graph_.nodes.end());
+	if (graph_.exit_node_id == id) {
+		graph_.exit_node_id.clear();
+		graph_.has_exit = false;
+	}
+}
+
+void GraphView::UpsertLine(const Line& line)
+{
+	if (!scene_ || (line.from_pin_id.empty() && line.to_pin_id.empty()))
+		return;
+
+	RemoveLinesOfPin(QString::fromStdString(line.to_pin_id));
+	if (line.is_exec)
+		RemoveLinesOfPin(QString::fromStdString(line.from_pin_id));
+
+	PinGraphicsItem* from = nullptr;
+	PinGraphicsItem* to = nullptr;
+	for (auto* item : scene_->items()) {
+		auto* node = dynamic_cast<NodeGraphicsItem*>(item);
+		if (!node)
+			continue;
+		if (!from)
+			from = node->FindPinItem(QString::fromStdString(line.from_pin_id));
+		if (!to)
+			to = node->FindPinItem(QString::fromStdString(line.to_pin_id));
+	}
+	if (!from || !to)
+		return;
+
+	AddLineItem(from, to, line);
+	graph_.lines.push_back(line);
+
+	auto mark = [](PinGraphicsItem* pin) {
+		Pin dto = pin->GetPin();
+		dto.connected = true;
+		pin->SetPin(dto);
+		pin->update();
+	};
+	mark(from);
+	mark(to);
+}
+
+void GraphView::RemoveLine(const QString& id)
+{
+	if (id.isEmpty())
+		return;
+	const std::string line_id = id.toStdString();
+	std::vector<LineGraphicsItem*> keep;
+	keep.reserve(lines_.size());
+	for (auto* line : lines_) {
+		if (!line) {
+			continue;
+		}
+		if (line->LineId() == id) {
+			if (line->scene())
+				scene_->removeItem(line);
+			delete line;
+			continue;
+		}
+		keep.push_back(line);
+	}
+	lines_ = std::move(keep);
+	graph_.lines.erase(
+		std::remove_if(graph_.lines.begin(), graph_.lines.end(),
+			[&](const Line& l) { return l.id == line_id; }),
+		graph_.lines.end());
+}
+
+void GraphView::RemoveLinesOfPin(const QString& pin_id)
+{
+	if (pin_id.isEmpty())
+		return;
+	const std::string id = pin_id.toStdString();
+	std::vector<LineGraphicsItem*> keep;
+	keep.reserve(lines_.size());
+	for (auto* line : lines_) {
+		if (!line) {
+			continue;
+		}
+		const bool hit =
+			(line->From() && line->From()->GetPin().id == id)
+			|| (line->To() && line->To()->GetPin().id == id);
+		if (hit) {
+			if (line->scene())
+				scene_->removeItem(line);
+			delete line;
+			continue;
+		}
+		keep.push_back(line);
+	}
+	lines_ = std::move(keep);
+	graph_.lines.erase(
+		std::remove_if(graph_.lines.begin(), graph_.lines.end(),
+			[&](const Line& l) { return l.from_pin_id == id || l.to_pin_id == id; }),
+		graph_.lines.end());
+}
+
 std::unordered_map<std::string, NodeGraphicsItem*> GraphView::NodeItemsByGuid() const
 {
 	std::unordered_map<std::string, NodeGraphicsItem*> map;
@@ -684,7 +864,7 @@ std::unordered_map<std::string, NodeGraphicsItem*> GraphView::NodeItemsByGuid() 
 		return map;
 	for (auto* item : scene_->items()) {
 		if (auto* node = dynamic_cast<NodeGraphicsItem*>(item))
-			map[node->Node().guid] = node;
+			map[node->GetNode().guid] = node;
 	}
 	return map;
 }
@@ -710,7 +890,7 @@ void GraphView::RebuildLinesFromGraph()
 			continue;
 		for (auto* pin : node->Pins()) {
 			if (pin)
-				pin_map[pin->Pin().id] = pin;
+				pin_map[pin->GetPin().id] = pin;
 		}
 	}
 
@@ -722,7 +902,7 @@ void GraphView::RebuildLinesFromGraph()
 	}
 }
 
-void GraphView::SetPalette(const std::vector<CallerItemDto>& callers)
+void GraphView::SetPalette(const std::vector<CallerItem>& callers)
 {
 	palette_ = callers;
 }
@@ -797,7 +977,7 @@ void GraphView::PlaceCaller(const QString& key, const QPointF& scene_pos)
 	emit GraphChanged();
 }
 
-void GraphView::AddLineItem(PinGraphicsItem* from, PinGraphicsItem* to, const LineDto& line)
+void GraphView::AddLineItem(PinGraphicsItem* from, PinGraphicsItem* to, const Line& line)
 {
 	auto* item = new LineGraphicsItem(from, to, line);
 	scene_->addItem(item);
@@ -876,30 +1056,30 @@ void GraphView::DispatchConnect(const QString& from_pin, const QString& to_pin)
 	emit GraphChanged();
 }
 
-void GraphView::TryConnectAfterSpawn(const QString& from_pin, const NodeDto* hint)
+void GraphView::TryConnectAfterSpawn(const QString& from_pin, const Node* hint)
 {
 	if (from_pin.isEmpty() || !hint)
 		return;
 
-	const PinDto* from = nullptr;
+	const Pin* from = nullptr;
 	for (const auto& node : graph_.nodes) {
 		from = FindPinDto(node, from_pin);
 		if (from)
 			break;
 	}
 
-	auto pick = [&](bool prefer_self) -> const PinDto* {
-		const PinDto* fallback = nullptr;
+	auto pick = [&](bool prefer_self) -> const Pin* {
+		const Pin* fallback = nullptr;
 		for (const auto& pin : hint->pins) {
 			if (from) {
-				const bool want_in = from->direction == DtoPinDir::Out;
-				const bool is_in = pin.direction == DtoPinDir::In;
+				const bool want_in = from->direction == PinDir::Out;
+				const bool is_in = pin.direction == PinDir::In;
 				if (want_in != is_in)
 					continue;
 				if (from->kind != pin.kind)
 					continue;
 			}
-			if (prefer_self && pin.name == "self" && pin.direction == DtoPinDir::In)
+			if (prefer_self && pin.name == "self" && pin.direction == PinDir::In)
 				return &pin;
 			if (!fallback)
 				fallback = &pin;
@@ -907,7 +1087,7 @@ void GraphView::TryConnectAfterSpawn(const QString& from_pin, const NodeDto* hin
 		return prefer_self ? nullptr : fallback;
 	};
 
-	const PinDto* target = pick(true);
+	const Pin* target = pick(true);
 	if (!target)
 		target = pick(false);
 	if (!target && !hint->pins.empty())
@@ -937,7 +1117,10 @@ void GraphView::ShowSpawnMenu(const QPoint& global_pos, const QPointF& scene_pos
 	});
 
 	std::unordered_map<std::string, QMenu*> group_menus;
+	const std::string self_key = graph_.flow_guid.empty() ? std::string() : "flow:" + graph_.flow_guid;
 	for (const auto& caller : palette_) {
+		if (!self_key.empty() && caller.key == self_key)
+			continue;
 		const QString group_name = caller.group.empty()
 			? QStringLiteral("Utilities")
 			: QString::fromStdString(caller.group);
@@ -960,7 +1143,7 @@ void GraphView::mousePressEvent(QMouseEvent* event)
 		if (auto* pin = PinAt(event->pos())) {
 			if (event->modifiers() & Qt::AltModifier) {
 				DispatchMsg(Action::DisconnectPin, QJsonObject{
-					{QStringLiteral("guid"), QString::fromStdString(pin->Pin().id)},
+					{QStringLiteral("guid"), QString::fromStdString(pin->GetPin().id)},
 				});
 				emit GraphChanged();
 				event->accept();
@@ -1055,8 +1238,8 @@ void GraphView::mouseReleaseEvent(QMouseEvent* event)
 		unsetCursor();
 		if (short_click && event->button() == Qt::RightButton) {
 			if (auto* pin = PinAt(event->pos())) {
-				const auto& p = pin->Pin();
-				if (p.kind == DtoPinKind::Exec && p.direction == DtoPinDir::Out
+				const auto& p = pin->GetPin();
+				if (p.kind == PinKind::Exec && p.direction == PinDir::Out
 					&& !p.type_name.empty() && p.name != "default") {
 					if (auto* owner = pin->OwnerNode()) {
 						scene_->clearSelection();
@@ -1082,7 +1265,7 @@ void GraphView::mouseReleaseEvent(QMouseEvent* event)
 				}
 			}
 			if (auto* item = NodeAt(event->pos())) {
-				const auto& node = item->Node();
+				const auto& node = item->GetNode();
 				if (node.is_entry || node.is_exit) {
 					scene_->clearSelection();
 					item->setSelected(true);
@@ -1101,10 +1284,10 @@ void GraphView::mouseReleaseEvent(QMouseEvent* event)
 	}
 
 	if (drag_pin_) {
-		const QString from_id = QString::fromStdString(drag_pin_->Pin().id);
+		const QString from_id = QString::fromStdString(drag_pin_->GetPin().id);
 		if (auto* target = PinAt(event->pos())) {
 			ClearTempLine();
-			DispatchConnect(from_id, QString::fromStdString(target->Pin().id));
+			DispatchConnect(from_id, QString::fromStdString(target->GetPin().id));
 		} else {
 			const QPoint global = event->globalPos();
 			const QPointF scene = mapToScene(event->pos());

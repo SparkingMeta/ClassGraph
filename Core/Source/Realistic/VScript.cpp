@@ -72,11 +72,7 @@ Result CG::Core::VScript::Call(VObject* object, AContext* ctx)
 			}
 		}while(0);
 
-		std::string token = "";
-		if (auto* node = dynamic_cast<ANode*>(object))
-			token = node->GetToken();
-
-		code = flow->Run(token);
+		code = flow->Run();
 
 		do{
 			if(!graph || !ctx) break;

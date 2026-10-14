@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "VDto.h"
 
@@ -6,11 +6,13 @@
 
 namespace CG::Router {
 
-	ROUTER_API bool ParseGraphDto(const std::string& json, GraphDto& out);
-	ROUTER_API bool ParseBlueprintDto(const std::string& json, BlueprintDto& out);
-	ROUTER_API bool ParsePaletteDto(const std::string& json, PaletteDto& out);
-	ROUTER_API bool ParseNodeDetailsDto(const std::string& json, NodeDetailsDto& out);
-	ROUTER_API bool ParseVarDetailsDto(const std::string& json, VarDetailsDto& out);
-	ROUTER_API bool ParseAssetListDto(const std::string& json, AssetListDto& out);
+	ROUTER_API bool ParseGraph(const std::string& json, Graph& out);
+	ROUTER_API bool ParseNodeDto(const std::string& json, Node& out);
+	ROUTER_API bool ParseLineDto(const std::string& json, Line& out);
+	ROUTER_API bool ParseBlueprint(const std::string& json, Blueprint& out);
+	ROUTER_API bool ParsePalette(const std::string& json, Palette& out);
+	ROUTER_API bool ParseNode(const std::string& json, NodeDetails& out);
+	ROUTER_API bool ParseVar(const std::string& json, VarDetails& out);
+	ROUTER_API bool ParseAssets(const std::string& json, AssetList& out);
 
 } // namespace sys

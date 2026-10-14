@@ -84,7 +84,7 @@ int TestMyBranch()
 		ConnectArg(call_print, "value", getter_a->GetOutputPin(0));
 		std::static_pointer_cast<VGraph>(graph)->SetEntry(entry);
 
-		run_flow->Run("1");
+		run_flow->Run();
 	}
 
 	GeneratedCode code;

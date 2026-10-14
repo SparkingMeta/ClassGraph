@@ -119,7 +119,7 @@ bool RunBranch(const char* suite, VSystem& system)
 	std::static_pointer_cast<VGraph>(graph)->SetEntry(entry);
 
 	if (!SetNodeInt(entry, "a", 5) || !SetNodeInt(entry, "b", 3)) return false;
-	if (!RunFlowOk(suite, "BranchTrue", flow, "branch-true")) return false;
+	if (!RunFlowOk(suite, "BranchTrue", flow)) return false;
 
 	int out = 0;
 	if (!GetVarInt(var, out) || out != 1) {
@@ -128,7 +128,7 @@ bool RunBranch(const char* suite, VSystem& system)
 	}
 
 	if (!SetNodeInt(entry, "a", 1) || !SetNodeInt(entry, "b", 9)) return false;
-	if (!RunFlowOk(suite, "BranchFalse", flow, "branch-false")) return false;
+	if (!RunFlowOk(suite, "BranchFalse", flow)) return false;
 	if (!GetVarInt(var, out) || out != 2) {
 		std::cerr << suite << " BranchFalse: expected 2, got " << out << '\n';
 		return false;
@@ -375,7 +375,7 @@ bool RunLoopCount(const char* suite, VSystem& system)
 
 	if (!SetNodeBool(entry, "run", true) || !SetNodeInt(entry, "first", 0) || !SetNodeInt(entry, "last", 3))
 		return false;
-	if (!RunFlowOk(suite, "LoopCount", flow, "loop-count")) return false;
+	if (!RunFlowOk(suite, "LoopCount", flow)) return false;
 
 	int out = 0;
 	if (!GetVarInt(var, out) || out != 3) {
@@ -415,7 +415,7 @@ bool RunSwitchCase(const char* suite)
 	std::static_pointer_cast<VGraph>(graph)->SetEntry(entry);
 
 	if (!SetNodeInt(entry, "sel", 0)) return false;
-	if (!RunFlowOk(suite, "SwitchCase0", flow, "switch-0")) return false;
+	if (!RunFlowOk(suite, "SwitchCase0", flow)) return false;
 
 	int out = 0;
 	if (!GetVarInt(var, out) || out != 10) {
@@ -424,7 +424,7 @@ bool RunSwitchCase(const char* suite)
 	}
 
 	if (!SetNodeInt(entry, "sel", 5)) return false;
-	if (!RunFlowOk(suite, "SwitchDefault", flow, "switch-default")) return false;
+	if (!RunFlowOk(suite, "SwitchDefault", flow)) return false;
 	if (!GetVarInt(var, out) || out != 99) {
 		std::cerr << suite << " SwitchDefault: expected 99, got " << out << '\n';
 		return false;
@@ -475,14 +475,14 @@ bool RunSwitchAddDelCase(const char* suite)
 	Connect(FindOutPin(sw, "default"), set_default->GetInputPin(0));
 	std::static_pointer_cast<VGraph>(graph)->SetEntry(entry);
 
-	if (!SetNodeInt(entry, "sel", 1) || !RunFlowOk(suite, "SwitchCase1", flow, "switch-1"))
+	if (!SetNodeInt(entry, "sel", 1) || !RunFlowOk(suite, "SwitchCase1", flow))
 		return false;
 	int out = 0;
 	if (!GetVarInt(var, out) || out != 10) {
 		std::cerr << suite << " SwitchCase1: expected 10, got " << out << '\n';
 		return false;
 	}
-	if (!SetNodeInt(entry, "sel", 16) || !RunFlowOk(suite, "SwitchCase16", flow, "switch-16"))
+	if (!SetNodeInt(entry, "sel", 16) || !RunFlowOk(suite, "SwitchCase16", flow))
 		return false;
 	if (!GetVarInt(var, out) || out != 20) {
 		std::cerr << suite << " SwitchCase16: expected 20, got " << out << '\n';
@@ -520,13 +520,13 @@ bool RunSwitchAddDelCase(const char* suite)
 		return false;
 	}
 
-	if (!SetNodeInt(entry, "sel", 1) || !RunFlowOk(suite, "SwitchAfterDel", flow, "switch-del"))
+	if (!SetNodeInt(entry, "sel", 1) || !RunFlowOk(suite, "SwitchAfterDel", flow))
 		return false;
 	if (!GetVarInt(var, out) || out != 99) {
 		std::cerr << suite << " SwitchAfterDel: expected default 99, got " << out << '\n';
 		return false;
 	}
-	if (!SetNodeInt(entry, "sel", 16) || !RunFlowOk(suite, "SwitchAfterDel16", flow, "switch-del-16"))
+	if (!SetNodeInt(entry, "sel", 16) || !RunFlowOk(suite, "SwitchAfterDel16", flow))
 		return false;
 	if (!GetVarInt(var, out) || out != 20) {
 		std::cerr << suite << " SwitchAfterDel16: expected 20, got " << out << '\n';

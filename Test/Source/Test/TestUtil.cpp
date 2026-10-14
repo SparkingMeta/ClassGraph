@@ -233,14 +233,13 @@ bool SetVarInt(const std::shared_ptr<VVariant>& var, int value)
 	return type && frame->SetValue(type, &value);
 }
 
-bool RunFlowOk(const char* suite, const char* label, const std::shared_ptr<AFlow>& flow,
-	const std::string& token)
+bool RunFlowOk(const char* suite, const char* label, const std::shared_ptr<AFlow>& flow)
 {
 	if (!flow) {
 		std::cerr << suite << " Run failed: " << label << " (null flow)\n";
 		return false;
 	}
-	if (flow->Run(token) != 0) {
+	if (flow->Run() != 0) {
 		std::cerr << suite << " Run failed: " << label << '\n';
 		return false;
 	}
