@@ -1,0 +1,82 @@
+#pragma execution_character_set("utf-8")
+
+#include "AppWindow.h"
+#include "VApi.h"
+#include "classgraph_host_paths.h"
+#include "queue.h"
+#include "event.h"
+#include "bus.h"
+#include "worker.h"
+
+#include "MainWindow.h"
+#include <QApplication>
+#include <QStyleFactory>
+
+using namespace CG::Router;
+
+int main(int argc, char* argv[])
+{
+	QApplication app(argc, argv);
+	QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+
+	HostConfig cfg = MakeCoreHostConfig();
+	cfg.type_out_dir = CLASSGRAPH_TYPE_OUT_DIR;
+	cfg.asset_root = CLASSGRAPH_ASSET_ROOT;
+	InitHost(cfg);
+
+	auto& router = GetRouter();
+
+	auto bus = CreateBus<Event>();
+
+	auto sink_queue = CreateQueue<Event>();
+	auto rise_queue = CreateQueue<Event>();
+
+	sink_queue->Start();
+	rise_queue->Start();
+
+	auto sink_worker = CreateWorker(
+		[&bus, &sink_queue] {
+			auto event = sink_queue->WaitPop();
+			if (!event) return false;
+			bus->Publish(*event);
+			return true;
+		},
+		[&] { sink_queue->Stop(); });
+
+	auto rise_worker = CreateWorker(
+		[&bus, &rise_queue] {
+			auto event = rise_queue->WaitPop();
+			if (!event) return false;
+			bus->Publish(*event);
+			return true;
+		},
+		[&] { rise_queue->Stop(); });
+
+	sink_worker->Start();
+	rise_worker->Start();
+
+	MainWindow window;
+
+	router.SetRise([&](const Message& msg) {
+		rise_queue->Push(Event{ EventId::EI_Rise, msg });
+	});
+
+	bus->Subscribe(EventId::EI_Sink, Handler<Message>{[&router](const Message& msg) {
+		router.DoAction(msg);
+	}});
+	bus->Subscribe(EventId::EI_Rise, Handler<Message>{[&window](const Message& msg) {
+		window.Notify(msg);
+	}});
+
+	window.SetSink([&](const Message& msg) {
+		sink_queue->Push(Event{ EventId::EI_Sink, msg });
+	});
+	window.showMaximized();
+
+	const int code = app.exec();
+
+	sink_worker->Stop();
+	rise_worker->Stop();
+	ShutdownHost();
+	return code;
+}
