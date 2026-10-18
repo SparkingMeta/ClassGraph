@@ -15,6 +15,7 @@ namespace CG::Core {
 	};
 
 	bool ConnectPins(const std::shared_ptr<APin>& from, const std::shared_ptr<APin>& to);
+	std::shared_ptr<ALine> MakeLine(const std::shared_ptr<APin>& from, const std::shared_ptr<APin>& to);
 	void DisconnectPin(const std::shared_ptr<APin>& pin);
 	void DisconnectLine(const std::shared_ptr<ALine>& line);
 }

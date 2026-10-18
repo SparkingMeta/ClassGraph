@@ -14,6 +14,7 @@ namespace CG::Core {
 		virtual ~VNode() = default;
 
 		static std::shared_ptr<VNode> Make(const std::shared_ptr<ACaller>& caller);
+		void SetWorkObserver(WorkObserver observer) override { work_observer_ = std::move(observer); }
 
 		Result Work() override;
 		std::shared_ptr<ANode> Next(int index = 0) const override;
@@ -54,6 +55,7 @@ namespace CG::Core {
 		std::unordered_map<uint16, std::shared_ptr<APin>> out_pins_{};
 		std::shared_ptr<AContext> context_{ nullptr };
 		std::shared_ptr<ACaller> caller_{ nullptr };
+		WorkObserver work_observer_;
 	};
 
 }

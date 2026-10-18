@@ -43,34 +43,41 @@ void CG::Core::DisconnectPin(const std::shared_ptr<APin>& pin)
 		DisconnectLine(line);
 }
 
-bool CG::Core::ConnectPins(const std::shared_ptr<APin>& from_in, const std::shared_ptr<APin>& to_in)
+std::shared_ptr<ALine> CG::Core::MakeLine(const std::shared_ptr<APin>& from_in, const std::shared_ptr<APin>& to_in)
 {
 	auto from = from_in;
 	auto to = to_in;
 	if (!from || !to || from == to)
-		return false;
+		return {};
 
 	if (from->GetDirect() == EDirect::In && to->GetDirect() == EDirect::Out)
 		std::swap(from, to);
 
 	if (from->GetDirect() != EDirect::Out || to->GetDirect() != EDirect::In)
-		return false;
+		return {};
 	if (from->GetOwner() && to->GetOwner() && from->GetOwner() == to->GetOwner())
-		return false;
+		return {};
 
 	const auto& from_meta = from->GetPinMeta();
 	const auto& to_meta = to->GetPinMeta();
 	if (from_meta.kind != to_meta.kind)
-		return false;
+		return {};
 	if (from_meta.kind == PinKind::Data && from_meta.type && to_meta.type && from_meta.type != to_meta.type)
-		return false;
+		return {};
 
 	if (from_meta.kind == PinKind::Exec)
 		DisconnectPin(from);
 	DisconnectPin(to);
 
 	auto line = std::make_shared<VLine>();
+	line->SetFrom(from);
+	line->SetTo(to);
 	from->BindLine(line);
 	to->BindLine(line);
-	return line->GetFrom() && line->GetTo();
+	return line->GetFrom() && line->GetTo() ? line : std::shared_ptr<ALine>{};
+}
+
+bool CG::Core::ConnectPins(const std::shared_ptr<APin>& from, const std::shared_ptr<APin>& to)
+{
+	return static_cast<bool>(MakeLine(from, to));
 }

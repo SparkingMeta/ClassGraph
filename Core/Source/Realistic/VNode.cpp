@@ -9,6 +9,7 @@
 #include "Realistic/VContext.h"
 #include "Realistic/VFrame.h"
 #include "Base/VMeta.h"
+#include "Base/VConvert.h"
 
 #include <string>
 #include <unordered_map>
@@ -46,11 +47,25 @@ Result CG::Core::VNode::Work()
 
 	}while(loop);
 	
-	return Result{ {}, code, index };
+	const Result result{ {}, code, index };
+	if (work_observer_)
+		work_observer_(std::static_pointer_cast<ANode>(shared_from_this()), result);
+	return result;
 }
 
 void CG::Core::VNode::Update()
 {
+	for (const auto& e : in_pins_) {
+		auto pin = e.second;
+		if (!pin || pin->GetPinMeta().kind != PinKind::Data)
+			continue;
+		auto frame = pin->GetFrame();
+		const auto& meta = pin->GetPinMeta();
+		if (!frame || !meta.type || meta.value.empty())
+			continue;
+		if (auto value = FromString(meta.value, meta.type))
+			frame->Update(value);
+	}
 	for (const auto& e : in_pins_) {
 		if (e.second)
 			e.second->Update();
@@ -153,6 +168,14 @@ void CG::Core::VNode::InitPins()
 			pin = std::make_shared<VExecPin>(self, direct);
 		}
 		pin->SetPinMeta(pin_meta);
+		if (pin_meta.kind == PinKind::Data && direct == EDirect::In) {
+			if (auto frame = pin->GetFrame()) {
+				auto meta = pin->GetPinMeta();
+				if (meta.value.empty())
+					meta.value = ToString(frame);
+				pin->SetPinMeta(meta);
+			}
+		}
 		return pin;
 	};
 
@@ -247,6 +270,13 @@ void CG::Core::VNode::ApplyMeta(const std::string& renamed_from, const std::stri
 			pin = std::make_shared<VExecPin>(self, direct);
 		}
 		pin->SetPinMeta(pin_meta);
+		if (pin_meta.kind == PinKind::Data && direct == EDirect::In && pin_meta.value.empty()) {
+			if (auto frame = pin->GetFrame()) {
+				auto meta = pin->GetPinMeta();
+				meta.value = ToString(frame);
+				pin->SetPinMeta(meta);
+			}
+		}
 		return pin;
 	};
 
@@ -259,12 +289,23 @@ void CG::Core::VNode::ApplyMeta(const std::string& renamed_from, const std::stri
 			std::shared_ptr<APin> pin;
 			if (auto it = old.find(pin_key(direct, pin_meta)); it != old.end() && it->second) {
 				pin = it->second;
-				const auto* old_type = pin->GetPinMeta().type;
-				pin->SetPinMeta(pin_meta);
+				const auto old_meta = pin->GetPinMeta();
+				const auto* old_type = old_meta.type;
+				auto next_meta = pin_meta;
+				if (pin_meta.kind == PinKind::Data && direct == EDirect::In
+					&& old_type == pin_meta.type && next_meta.value.empty())
+					next_meta.value = old_meta.value;
+				pin->SetPinMeta(next_meta);
 				if (pin_meta.kind == PinKind::Data)
 					pin->SetFrame(context_->GetFrame(pin_meta.name));
 				if (old_type && pin_meta.type && old_type != pin_meta.type)
 					DisconnectPin(pin);
+				if (pin_meta.kind == PinKind::Data && direct == EDirect::In && next_meta.value.empty()) {
+					if (auto frame = pin->GetFrame()) {
+						next_meta.value = ToString(frame);
+						pin->SetPinMeta(next_meta);
+					}
+				}
 			} else {
 				pin = make_pin(pin_meta, direct);
 			}

@@ -15,17 +15,21 @@
 #include <QDrag>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleValidator>
 #include <QDockWidget>
 #include <QEvent>
 #include <QEventLoop>
 #include <QFontMetrics>
 #include <QFormLayout>
 #include <QFrame>
+#include <QHash>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QIntValidator>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
@@ -40,9 +44,11 @@
 #include <QPointer>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QStringList>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTabBar>
 #include <QTextEdit>
 #include <QThread>
@@ -55,7 +61,9 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -134,6 +142,45 @@ namespace {
 		if (value.isString())
 			return value.toString();
 		return {};
+	}
+
+	QString DecodePinValue(const QString& value)
+	{
+		if (value.isEmpty()) return {};
+		QJsonParseError error{};
+		const auto doc = QJsonDocument::fromJson(("[" + value + "]").toUtf8(), &error);
+		if (error.error != QJsonParseError::NoError || !doc.isArray() || doc.array().isEmpty()) return value;
+		const auto decoded = doc.array().first();
+		if (decoded.isString()) return decoded.toString();
+		return QString::fromUtf8(QJsonDocument(QJsonArray{decoded}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
+	}
+
+	QString EncodePinValue(const QString& type, const QString& value)
+	{
+		QJsonValue encoded;
+		if (type == QStringLiteral("bool"))
+			encoded = value.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0 || value == QStringLiteral("1");
+		else if (type == QStringLiteral("int") || type == QStringLiteral("int64") || type == QStringLiteral("uint") || type == QStringLiteral("uint64")) {
+			if (type == QStringLiteral("uint") || type == QStringLiteral("uint64")) {
+				bool ok = false;
+				const qulonglong number = value.toULongLong(&ok);
+				if (!ok) return {};
+				return QString::number(number);
+			}
+			bool ok = false;
+			const qlonglong number = value.toLongLong(&ok);
+			if (!ok) return {};
+			return QString::number(number);
+		} else if (type == QStringLiteral("float") || type == QStringLiteral("double")) {
+			bool ok = false;
+			const double number = value.toDouble(&ok);
+			if (!ok || !std::isfinite(number)) return {};
+			encoded = number;
+		} else if (type == QStringLiteral("std::string") || type == QStringLiteral("string"))
+			encoded = value;
+		else
+			return value;
+		return QString::fromUtf8(QJsonDocument(QJsonArray{encoded}).toJson(QJsonDocument::Compact)).mid(1).chopped(1);
 	}
 
 	enum class DetailKind { Leaf, List };
@@ -708,6 +755,12 @@ void MainWindow::InitAction()
 	RegisterAction(Action::AddNode, &MainWindow::Sig_AddNode, &MainWindow::Slot_AddNode);
 	RegisterAction(Action::DelNode, &MainWindow::Sig_DelNode, &MainWindow::Slot_DelNode);
 	RegisterAction(Action::AltNode, &MainWindow::Sig_AltNode, &MainWindow::Slot_AltNode);
+	RegisterAction(Action::AddLine, &MainWindow::Sig_AddLine, &MainWindow::Slot_AddLine);
+	RegisterAction(Action::DelLine, &MainWindow::Sig_DelLine, &MainWindow::Slot_DelLine);
+	RegisterAction(Action::Compile, &MainWindow::Sig_Compile, &MainWindow::Slot_Compile);
+	RegisterAction(Action::RunFunc, &MainWindow::Sig_RunFunc, &MainWindow::Slot_RunFunc);
+	RegisterAction(Action::RuntimeSync, &MainWindow::Sig_RuntimeSync, &MainWindow::Slot_RuntimeSync);
+	RegisterAction(Action::LogOutput, &MainWindow::Sig_Output, &MainWindow::Slot_Output);
 }
 
 void MainWindow::AppendLog(const QString& text)
@@ -723,9 +776,9 @@ void MainWindow::ClearLog()
 		log_->clear();
 }
 
-Emiter MainWindow::FindEmiter(int act) const
+Emiter MainWindow::FindEmiter(Action action) const
 {
-	if(auto it = emiters_.find(act); it != emiters_.end())
+	if(auto it = emiters_.find(action); it != emiters_.end())
 		return it->second;
 	return {};
 }
@@ -805,8 +858,10 @@ void MainWindow::PutGraphNode(const QString& flow, const QString& guid, const QS
 	}
 	if (!found)
 		nodes.push_back(GraphNodeState{guid, name, key, group, x, y, pins});
-	if (auto* view = FindGraphView(flow))
-		view->addNode(guid, name, key, group, QPointF(x, y), pins);
+	if (auto* view = FindGraphView(flow)) {
+		if (found) view->setNodePins(guid, pins);
+		else view->addNode(guid, name, key, group, QPointF(x, y), pins);
+	}
 }
 
 void MainWindow::ForgetGraphNode(const QString& flow, const QString& guid)
@@ -822,6 +877,15 @@ void MainWindow::ForgetGraphNode(const QString& flow, const QString& guid)
 	}), nodes.end());
 	if (auto* view = FindGraphView(flow))
 		view->removeNode(guid);
+	auto line_it = flow_lines_.find(flow.toStdString());
+	if (line_it != flow_lines_.end()) {
+		for (const auto& line : line_it->second)
+			if (line.fromNode == guid || line.toNode == guid)
+				if (auto* view = FindGraphView(flow)) view->removeLine(line.guid);
+		line_it->second.erase(std::remove_if(line_it->second.begin(), line_it->second.end(), [&](const GraphLineState& line) {
+			return line.fromNode == guid || line.toNode == guid;
+		}), line_it->second.end());
+	}
 }
 
 void MainWindow::MoveGraphNode(const QString& flow, const QString& guid, double x, double y)
@@ -842,6 +906,20 @@ void MainWindow::MoveGraphNode(const QString& flow, const QString& guid, double 
 		view->moveNode(guid, QPointF(x, y));
 }
 
+void MainWindow::SetGraphNodeRuntimeStatus(const QString& flow, const QString& guid, const QString& status)
+{
+	if (auto it = flow_nodes_.find(flow.toStdString()); it != flow_nodes_.end()) {
+		for (auto& node : it->second) {
+			if (node.guid == guid) {
+				node.runtime_status = status;
+				break;
+			}
+		}
+	}
+	if (auto* view = FindGraphView(flow))
+		view->setNodeRuntimeStatus(guid, status);
+}
+
 bool MainWindow::FlowHasNode(const QString& flow, const QString& key) const
 {
 	auto it = flow_nodes_.find(flow.toStdString());
@@ -859,10 +937,63 @@ void MainWindow::RestoreGraphNodes(GraphView* view)
 	if (!view)
 		return;
 	auto it = flow_nodes_.find(view->guid().toStdString());
-	if (it == flow_nodes_.end())
-		return;
-	for (const auto& node : it->second)
+	if (it != flow_nodes_.end()) for (const auto& node : it->second)
 		view->addNode(node.guid, node.name, node.key, node.group, QPointF(node.x, node.y), node.pins);
+	const auto line_it = flow_lines_.find(view->guid().toStdString());
+	if (line_it != flow_lines_.end()) for (const auto& line : line_it->second)
+		view->addLine(line.guid, line.fromNode, line.fromPin, line.toNode, line.toPin);
+	if (it != flow_nodes_.end()) for (const auto& node : it->second)
+		view->setNodeRuntimeStatus(node.guid, node.runtime_status);
+}
+
+void MainWindow::PutGraphLine(const QString& flow, const QString& guid, const QString& fromNode, const QString& fromPin, const QString& toNode, const QString& toPin)
+{
+	if (flow.isEmpty() || guid.isEmpty()) return;
+	auto& lines = flow_lines_[flow.toStdString()];
+	for (auto& line : lines) if (line.guid == guid) {
+		line.fromNode = fromNode; line.fromPin = fromPin; line.toNode = toNode; line.toPin = toPin;
+		if (auto* view = FindGraphView(flow)) view->addLine(guid, fromNode, fromPin, toNode, toPin);
+		RefreshGraphPinConnections(flow);
+		return;
+	}
+	lines.push_back({guid, fromNode, fromPin, toNode, toPin});
+	if (auto* view = FindGraphView(flow)) view->addLine(guid, fromNode, fromPin, toNode, toPin);
+	RefreshGraphPinConnections(flow);
+}
+
+void MainWindow::ForgetGraphLine(const QString& flow, const QString& guid)
+{
+	if (flow.isEmpty() || guid.isEmpty()) return;
+	auto it = flow_lines_.find(flow.toStdString());
+	if (it != flow_lines_.end()) it->second.erase(std::remove_if(it->second.begin(), it->second.end(), [&](const GraphLineState& line) { return line.guid == guid; }), it->second.end());
+	if (auto* view = FindGraphView(flow)) view->removeLine(guid);
+	RefreshGraphPinConnections(flow);
+}
+
+void MainWindow::RefreshGraphPinConnections(const QString& flow)
+{
+	auto nodes = flow_nodes_.find(flow.toStdString());
+	if (nodes == flow_nodes_.end()) return;
+	auto lines = flow_lines_.find(flow.toStdString());
+	for (auto& node : nodes->second) {
+		for (int i = 0; i < node.pins.size(); ++i) {
+			auto row = node.pins.at(i);
+			QJsonObject pin = row.toObject();
+			const QString pin_guid = pin.value(g_key_guid).toString();
+			const bool input = pin.value(g_key_direct).toInt() == 0;
+			bool connected = false;
+			if (lines != flow_lines_.end()) for (const auto& line : lines->second) {
+				if ((input && line.toNode == node.guid && line.toPin == pin_guid)
+					|| (!input && line.fromNode == node.guid && line.fromPin == pin_guid)) {
+					connected = true;
+					break;
+				}
+			}
+			pin[g_key_connected] = connected;
+			node.pins[i] = pin;
+		}
+		if (auto* view = FindGraphView(flow)) view->setNodePins(node.guid, node.pins);
+	}
 }
 
 int MainWindow::FindGraphTab(const QString& guid) const
@@ -889,6 +1020,21 @@ void MainWindow::OpenGraphPage(const QString& guid, const QString& name)
 		connect(view, &GraphView::variableDropped, this, &MainWindow::OnVarDropped);
 		connect(view, &GraphView::contextMenuRequested, this, &MainWindow::OnGraphMenu);
 		connect(view, &GraphView::nodeMoved, this, &MainWindow::OnNodeMoved);
+		connect(view, &GraphView::nodeSelected, this, &MainWindow::OnNodeSelected);
+		connect(view, &GraphView::pinValueEditRequested, this,
+			[this](const QString& node, const QString& pin, const QString& type, const QString& value) {
+				const QString serialized = EncodePinValue(type, value);
+				if (serialized.isEmpty() && !value.isEmpty()) {
+					AppendLog(QStringLiteral("Invalid pin value."));
+					return;
+				}
+				Dispatch(Action::AltNode, QJsonObject{{g_key_guid, node}, {g_key_pin, pin}, {g_key_value, serialized}});
+			});
+		connect(view, &GraphView::lineRequested, this, &MainWindow::OnLineRequested);
+		connect(view, &GraphView::methodMenuRequested, this, &MainWindow::OnPinMethodMenu);
+		connect(view, &GraphView::deleteLineRequested, this, [this](const QString& guid) {
+			Dispatch(Action::DelLine, QJsonObject{{g_key_guid, guid}});
+		});
 		connect(view, &GraphView::deleteNodeRequested, this, [this](const QString& node_guid, const QString& key) {
 			if (key == QString::fromUtf8(g_node_entry) || node_guid.isEmpty())
 				return;
@@ -956,6 +1102,7 @@ void MainWindow::ClearGraphPages()
 		delete page;
 	}
 	flow_nodes_.clear();
+	flow_lines_.clear();
 }
 
 void MainWindow::ClearDetails()
@@ -982,47 +1129,309 @@ void MainWindow::AppendDetails(const QJsonArray& fields, const QString& prefix)
 {
 	if (!details_form_ || !details_host_)
 		return;
+	AppendDetailsTo(details_form_, fields, prefix);
+}
+
+void MainWindow::AppendDetailsTo(QFormLayout* form, const QJsonArray& fields, const QString& prefix)
+{
+	if (!form || !details_host_)
+		return;
+
+	const auto makeSection = [this](const QString& title, const std::function<void(QFormLayout*)>& fill, const QString& badge) {
+		auto* section = new QWidget(details_host_);
+		section->setObjectName(QStringLiteral("DetailSection"));
+		auto* layout = new QVBoxLayout(section);
+		layout->setContentsMargins(0, 2, 0, 2);
+		layout->setSpacing(0);
+
+		auto* header = new QWidget(section);
+		auto* header_layout = new QHBoxLayout(header);
+		header_layout->setContentsMargins(0, 0, 0, 0);
+		header_layout->setSpacing(8);
+		auto* toggle = new QToolButton(section);
+		toggle->setObjectName(QStringLiteral("DetailSectionToggle"));
+		toggle->setText(title);
+		toggle->setCheckable(true);
+		toggle->setChecked(true);
+		toggle->setAutoRaise(true);
+		toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+		toggle->setArrowType(Qt::DownArrow);
+		toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+		header_layout->addWidget(toggle, 1);
+		if (!badge.isEmpty()) {
+			auto* badge_label = new QLabel(badge, header);
+			badge_label->setObjectName(QStringLiteral("DetailSectionBadge"));
+			header_layout->addWidget(badge_label);
+		}
+		layout->addWidget(header);
+
+		auto* body = new QWidget(section);
+		auto* body_layout = new QFormLayout(body);
+		body_layout->setContentsMargins(18, 0, 0, 2);
+		body_layout->setHorizontalSpacing(8);
+		body_layout->setVerticalSpacing(6);
+		body_layout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+		layout->addWidget(body);
+		fill(body_layout);
+		connect(toggle, &QToolButton::toggled, section, [body, toggle](bool visible) {
+			body->setVisible(visible);
+			toggle->setArrowType(visible ? Qt::DownArrow : Qt::RightArrow);
+		});
+		return section;
+	};
+
 	for (const auto& row : fields) {
-		const QJsonObject field = row.toObject();
+		QJsonObject field = row.toObject();
 		const QString show = field.value(g_key_show).toString();
 		const QString key = field.value(g_key_key).toString();
+		if (detail_kind_ == QString::fromUtf8(g_kind_var)
+			&& key == QString::fromUtf8(g_key_value)
+			&& field.value(g_key_value).isString())
+			field[g_key_value] = DecodePinValue(field.value(g_key_value).toString());
 		const QString text = field.value(g_key_text).toString();
 		const DetailControl* control = FindDetailControl(show);
-		if (!control) continue;
+		if (!control)
+			continue;
 
 		if (control->kind == DetailKind::List) {
-			if (!text.isEmpty()) {
-				auto* title = new QLabel(text, details_host_);
-				title->setObjectName(QStringLiteral("SectionTitle"));
-				details_form_->addRow(title);
+			const auto groups = field.value(g_key_value).toArray();
+			const QString list_title = text.isEmpty() ? key : text;
+			const QJsonArray columns = field.value(g_key_columns).toArray();
+			if (detail_kind_ == QString::fromUtf8(g_kind_node) && key == QString::fromUtf8(g_key_pins)) {
+				const bool can_edit_params = field.value(g_key_editable).toBool();
+				QString pin_prefix = prefix.isEmpty() ? key : prefix + QStringLiteral(".") + key;
+				if (!pin_prefix.isEmpty()) pin_prefix += QLatin1Char('.');
+				auto* pins_section = makeSection(list_title, [this, groups, pin_prefix, can_edit_params, &makeSection](QFormLayout* pin_list) {
+					for (const auto& group_row : groups) {
+						const QJsonObject group = group_row.toObject();
+						const QString pin_guid = group.value(g_key_key).toString();
+						const QString pin_name = group.value(g_key_text).toString();
+						const QJsonArray pin_fields = group.value(g_key_fields).toArray();
+						QString pin_type;
+						for (const auto& pin_field_row : pin_fields) {
+							const QJsonObject pin_field = pin_field_row.toObject();
+							if (pin_field.value(g_key_key).toString() == QString::fromUtf8(g_key_type)) {
+								pin_type = DetailText(pin_field.value(g_key_value));
+								break;
+							}
+						}
+						const QString type_key = pin_prefix + pin_guid + QLatin1Char('.') + QString::fromUtf8(g_key_type);
+						auto* pin_section = makeSection(pin_name, [this, pin_fields, pin_type, pin_prefix, pin_guid](QFormLayout* pin_form) {
+							for (const auto& pin_field_row : pin_fields) {
+								QJsonObject pin_field = pin_field_row.toObject();
+								const QString field_key = pin_field.value(g_key_key).toString();
+								if (field_key == QString::fromUtf8(g_key_name) || field_key == QString::fromUtf8(g_key_type))
+									continue;
+								if (field_key == QString::fromUtf8(g_key_value))
+									pin_field[g_key_value] = DecodePinValue(DetailText(pin_field.value(g_key_value)));
+								const QString show = pin_field.value(g_key_show).toString();
+								const DetailControl* pin_control = FindDetailControl(show);
+								if (!pin_control || !pin_control->make)
+									continue;
+								QWidget* widget = pin_control->make(details_host_, pin_field);
+								if (!widget)
+									continue;
+								const bool is_value = field_key == QString::fromUtf8(g_key_value);
+								const bool editable = is_value && (pin_field.contains(g_key_editable)
+									? pin_field.value(g_key_editable).toBool()
+									: show != QString::fromUtf8(g_show_label));
+								if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
+									edit->setObjectName(is_value ? QStringLiteral("PinValueEdit") : QStringLiteral("DetailValueEdit"));
+									if (pin_type == QStringLiteral("int")) edit->setValidator(new QIntValidator(edit));
+									else if (pin_type == QStringLiteral("float") || pin_type == QStringLiteral("double")) edit->setValidator(new QDoubleValidator(edit));
+									if (!editable) edit->setReadOnly(true);
+									else edit->setPlaceholderText(QStringLiteral("输入值"));
+								} else if (auto* label = qobject_cast<QLabel*>(widget); label && is_value) {
+									label->setObjectName(QStringLiteral("PinValueDisplay"));
+								} else if (auto* check = qobject_cast<QCheckBox*>(widget)) {
+									check->setObjectName(QStringLiteral("PinValueCheck"));
+									check->setText(QString{});
+									check->setEnabled(editable);
+								}
+								const QString detail_key = pin_prefix + pin_guid + QLatin1Char('.') + field_key;
+								if (!detail_key.isEmpty() && pin_control->set)
+									detail_fields_.insert({detail_key.toStdString(), DetailField{widget, pin_control->set}});
+								auto* field_label = new QLabel(pin_field.value(g_key_text).toString(), details_host_);
+								field_label->setObjectName(QStringLiteral("PinParamLabel"));
+								pin_form->addRow(field_label, widget);
+								if (!editable || detail_key.isEmpty())
+									continue;
+								if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
+									connect(edit, &QLineEdit::editingFinished, this, [this, detail_key, edit] {
+										CommitDetail(detail_key, edit->text());
+									});
+								} else if (auto* check = qobject_cast<QCheckBox*>(widget)) {
+									connect(check, &QCheckBox::toggled, this, [this, detail_key](bool value) {
+										CommitDetail(detail_key, value);
+									});
+								}
+							}
+						}, pin_type);
+						if (auto* type_label = pin_section->findChild<QLabel*>(QStringLiteral("DetailSectionBadge")))
+							detail_fields_.insert({type_key.toStdString(), DetailField{type_label, [](QWidget* widget, const QJsonValue& value) {
+								if (auto* label = qobject_cast<QLabel*>(widget)) label->setText(DetailText(value));
+							}}});
+						if (can_edit_params) {
+							auto* toggle = pin_section->findChild<QToolButton*>(QStringLiteral("DetailSectionToggle"));
+							auto* header = toggle ? toggle->parentWidget() : nullptr;
+							auto* header_layout = header ? qobject_cast<QHBoxLayout*>(header->layout()) : nullptr;
+							if (header_layout) {
+								auto* remove = new QToolButton(pin_section);
+								remove->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
+								remove->setToolTip(QStringLiteral("删除参数"));
+								remove->setAutoRaise(true);
+								header_layout->addWidget(remove);
+								connect(remove, &QToolButton::clicked, this, [this, node_guid = detail_guid_, pin_guid] {
+									Dispatch(Action::AltNode, QJsonObject{
+										{g_key_guid, node_guid},
+										{g_key_param_action, QStringLiteral("delete")},
+										{g_key_pin, pin_guid},
+									});
+								});
+							}
+						}
+						pin_list->addRow(pin_section);
+					}
+					if (can_edit_params) {
+						auto* editor = new QWidget(details_host_);
+						auto* editor_layout = new QHBoxLayout(editor);
+						editor_layout->setContentsMargins(0, 4, 0, 0);
+						editor_layout->setSpacing(6);
+						auto* name_edit = new QLineEdit(editor);
+						name_edit->setObjectName(QStringLiteral("DetailParamNameEdit"));
+						name_edit->setPlaceholderText(QStringLiteral("参数名称"));
+						auto* type_combo = new QComboBox(editor);
+						type_combo->setObjectName(QStringLiteral("DetailParamTypeCombo"));
+						if (var_type_combo_) {
+							for (int i = 0; i < var_type_combo_->count(); ++i) {
+								const QString type = var_type_combo_->itemText(i);
+								if (!type.isEmpty()) type_combo->addItem(type, var_type_combo_->itemData(i));
+							}
+						}
+						auto* add = new QToolButton(editor);
+						add->setText(QStringLiteral("+"));
+						add->setToolTip(QStringLiteral("添加参数"));
+						add->setAutoRaise(true);
+						add->setEnabled(type_combo->count() > 0);
+						editor_layout->addWidget(name_edit, 1);
+						editor_layout->addWidget(type_combo);
+						editor_layout->addWidget(add);
+						pin_list->addRow(editor);
+						auto add_param = [this, node_guid = detail_guid_, name_edit, type_combo] {
+							const QString name = name_edit->text().trimmed();
+							if (name.isEmpty() || type_combo->currentText().isEmpty()) return;
+							Dispatch(Action::AltNode, QJsonObject{
+								{g_key_guid, node_guid},
+								{g_key_param_action, QStringLiteral("add")},
+								{g_key_name, name},
+								{g_key_type, type_combo->currentText()},
+							});
+						};
+						connect(add, &QToolButton::clicked, this, add_param);
+						connect(name_edit, &QLineEdit::returnPressed, this, add_param);
+					}
+				}, {});
+				form->addRow(pins_section);
+				continue;
 			}
-			for (const auto& group_row : field.value(g_key_value).toArray()) {
-				const QJsonObject group = group_row.toObject();
-				const QString group_key = group.value(g_key_key).toString();
-				const QString group_text = group.value(g_key_text).toString();
-				if (!group_text.isEmpty()) {
-					auto* title = new QLabel(group_text, details_host_);
-					title->setObjectName(QStringLiteral("SectionTitle"));
-					details_form_->addRow(title);
+			QString list_prefix = prefix;
+			if (!key.isEmpty())
+				list_prefix = prefix.isEmpty() ? key : prefix + QStringLiteral(".") + key;
+			if (!columns.isEmpty()) {
+				auto* table = new QTreeWidget(details_host_);
+				table->setRootIsDecorated(false);
+				table->setIndentation(0);
+				table->setColumnCount(columns.size());
+				QStringList headers;
+				for (const auto& column : columns)
+					headers.append(column.toObject().value(g_key_text).toString());
+				table->setHeaderLabels(headers);
+				table->setSelectionMode(QAbstractItemView::NoSelection);
+				table->setFocusPolicy(Qt::NoFocus);
+				table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+				table->header()->setStretchLastSection(true);
+				for (int i = 0; i < columns.size(); ++i)
+					table->header()->setSectionResizeMode(i, QHeaderView::Stretch);
+
+				for (const auto& group_row : groups) {
+					const QJsonObject group = group_row.toObject();
+					QHash<QString, QString> values;
+					for (const auto& detail_row : group.value(g_key_fields).toArray()) {
+						const QJsonObject detail = detail_row.toObject();
+						values.insert(detail.value(g_key_key).toString(), DetailText(detail.value(g_key_value)));
+					}
+					auto* item = new QTreeWidgetItem(table);
+					for (int i = 0; i < columns.size(); ++i) {
+						const QString column_key = columns.at(i).toObject().value(g_key_key).toString();
+						item->setText(i, column_key == QString::fromUtf8(g_key_name)
+							? group.value(g_key_text).toString()
+							: values.value(column_key));
+					}
 				}
-				QString next = prefix;
-				if (!group_key.isEmpty())
-					next = prefix.isEmpty() ? group_key : prefix + QStringLiteral(".") + group_key;
-				if (!next.isEmpty())
-					next += QStringLiteral(".");
-				AppendDetails(group.value(g_key_fields).toArray(), next);
+
+				auto* section = makeSection(list_title, [table](QFormLayout* body) {
+					body->addRow(table);
+				}, {});
+				form->addRow(section);
+				continue;
 			}
+				auto* list = makeSection(list_title, [this, groups, list_prefix, &makeSection](QFormLayout* list_form) {
+				for (const auto& group_row : groups) {
+					const QJsonObject group = group_row.toObject();
+					const QString group_key = group.value(g_key_key).toString();
+					const QString group_text = group.value(g_key_text).toString();
+					QString next = list_prefix;
+					if (!group_key.isEmpty())
+						next = list_prefix.isEmpty() ? group_key : list_prefix + QStringLiteral(".") + group_key;
+					if (!next.isEmpty())
+						next += QStringLiteral(".");
+						auto* group_widget = makeSection(group_text.isEmpty() ? group_key : group_text,
+						[this, fields = group.value(g_key_fields).toArray(), next](QFormLayout* group_form) {
+							AppendDetailsTo(group_form, fields, next);
+							}, {});
+					list_form->addRow(group_widget);
+				}
+				}, {});
+			form->addRow(list);
 			continue;
 		}
+
 		if (!control->make)
 			continue;
 		QWidget* widget = control->make(details_host_, field);
 		if (!widget)
 			continue;
-		details_form_->addRow(text, widget);
-		if (key.isEmpty() || !control->set)
+
+		const bool editable = field.contains(g_key_editable)
+			? field.value(g_key_editable).toBool()
+			: show != QString::fromUtf8(g_show_label);
+		if (!editable) {
+			if (auto* edit = qobject_cast<QLineEdit*>(widget))
+				edit->setReadOnly(true);
+			else if (qobject_cast<QComboBox*>(widget) || qobject_cast<QCheckBox*>(widget))
+				widget->setEnabled(false);
+		}
+		form->addRow(text, widget);
+
+		const QString detail_key = prefix + key;
+		if (!key.isEmpty() && control->set)
+			detail_fields_.insert({detail_key.toStdString(), DetailField{widget, control->set}});
+		if (!editable || key.isEmpty())
 			continue;
-		detail_fields_.insert({(prefix + key).toStdString(), DetailField{widget, control->set}});
+
+		if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
+			connect(edit, &QLineEdit::editingFinished, this, [this, detail_key, edit] {
+				CommitDetail(detail_key, edit->text());
+			});
+		} else if (auto* combo = qobject_cast<QComboBox*>(widget)) {
+			connect(combo, &QComboBox::currentTextChanged, this, [this, detail_key](const QString& value) {
+				CommitDetail(detail_key, value);
+			});
+		} else if (auto* check = qobject_cast<QCheckBox*>(widget)) {
+			connect(check, &QCheckBox::toggled, this, [this, detail_key](bool value) {
+				CommitDetail(detail_key, value);
+			});
+		}
 	}
 }
 
@@ -1031,7 +1440,49 @@ void MainWindow::SetDetailValue(const QString& key, const QJsonValue& value)
 	auto it = detail_fields_.find(key.toStdString());
 	if (it == detail_fields_.end() || !it->second.widget || !it->second.set)
 		return;
+	const QSignalBlocker blocker(it->second.widget);
 	it->second.set(it->second.widget, value);
+}
+
+void MainWindow::CommitDetail(const QString& key, const QJsonValue& value)
+{
+	if (key.isEmpty() || detail_guid_.isEmpty())
+		return;
+
+	if (detail_kind_ == QString::fromUtf8(g_kind_blueprint) && key == QString::fromUtf8(g_key_name)) {
+		Dispatch(Action::AltBP, QJsonObject{{g_key_guid, detail_guid_}, {g_key_name, value}});
+	} else if (detail_kind_ == QString::fromUtf8(g_kind_flow) && key == QString::fromUtf8(g_key_name)) {
+		Dispatch(Action::AltFunc, QJsonObject{{g_key_guid, detail_guid_}, {g_key_name, value}});
+	} else if (detail_kind_ == QString::fromUtf8(g_kind_var)
+		&& key == QString::fromUtf8(g_key_name)) {
+		Dispatch(Action::AltVar, QJsonObject{{g_key_guid, detail_guid_}, {g_key_name, value}});
+	} else if (detail_kind_ == QString::fromUtf8(g_kind_node)) {
+		if (key == QString::fromUtf8(g_key_x) || key == QString::fromUtf8(g_key_y)) {
+			QJsonObject body{{g_key_guid, detail_guid_}};
+			body.insert(key, value);
+			Dispatch(Action::AltNode, body);
+			return;
+		}
+		const QStringList parts = key.split(QLatin1Char('.'));
+		if (parts.size() == 3 && parts[0] == QString::fromUtf8(g_key_pins)
+			&& parts[2] == QString::fromUtf8(g_key_value)) {
+			const QString type_key = parts[0] + QLatin1Char('.') + parts[1] + QLatin1Char('.') + QString::fromUtf8(g_key_type);
+			const auto type_it = detail_fields_.find(type_key.toStdString());
+			const QString type = type_it != detail_fields_.end() && qobject_cast<QLabel*>(type_it->second.widget)
+				? qobject_cast<QLabel*>(type_it->second.widget)->text() : QString{};
+			const QString plain_value = DetailText(value);
+			const QString serialized = EncodePinValue(type, plain_value);
+			if (serialized.isEmpty() && !plain_value.isEmpty()) {
+				AppendLog(QStringLiteral("Invalid pin value."));
+				return;
+			}
+			Dispatch(Action::AltNode, QJsonObject{
+				{g_key_guid, detail_guid_},
+				{g_key_pin, parts[1]},
+				{g_key_value, serialized},
+			});
+		}
+	}
 }
 
 
@@ -1192,6 +1643,31 @@ void MainWindow::Slot_AddNode(const Message& msg)
 		obj.value(g_key_x).toDouble(),
 		obj.value(g_key_y).toDouble(),
 		obj.value(g_key_pins).toArray());
+	const QString from_node = obj.value(g_key_from_node).toString();
+	const QString from_pin = obj.value(g_key_from_pin).toString();
+	if (!from_node.isEmpty() && !from_pin.isEmpty()) {
+		QString target_pin = obj.value(g_key_to_pin).toString();
+		if (target_pin.isEmpty()) {
+			for (const auto& row : obj.value(g_key_pins).toArray()) {
+				const QJsonObject pin = row.toObject();
+				if (pin.value(g_key_name).toString() != QStringLiteral("self")
+					|| pin.value(g_key_direct).toInt() != 0
+					|| pin.value(g_key_kind).toInt() != 1)
+					continue;
+				target_pin = pin.value(g_key_guid).toString();
+				break;
+			}
+		}
+		if (!target_pin.isEmpty()) {
+			Dispatch(Action::AddLine, QJsonObject{
+				{g_key_flow, obj.value(g_key_flow)},
+				{g_key_from_node, from_node},
+				{g_key_from_pin, from_pin},
+				{g_key_to_node, obj.value(g_key_guid)},
+				{g_key_to_pin, target_pin},
+			});
+		}
+	}
 }
 
 void MainWindow::Slot_DelNode(const Message& msg)
@@ -1218,8 +1694,12 @@ void MainWindow::Slot_AltNode(const Message& msg)
 			for (const auto& node : nodes) {
 				if (node.guid != guid)
 					continue;
-				if (auto* view = FindGraphView(QString::fromStdString(flow)))
+				if (auto* view = FindGraphView(QString::fromStdString(flow))) {
 					view->moveNode(guid, QPointF(node.x, node.y));
+					view->setNodePins(guid, node.pins);
+				}
+				if (detail_kind_ == g_kind_node && detail_guid_ == guid)
+					Dispatch(Action::SelectNode, QJsonObject{{g_key_guid, guid}});
 				return;
 			}
 		}
@@ -1227,6 +1707,16 @@ void MainWindow::Slot_AltNode(const Message& msg)
 	}
 
 	const QString flow = obj.value(g_key_flow).toString();
+	if (obj.value(g_key_pins).isArray()) {
+		for (const auto& row : obj.value(g_key_removed_lines).toArray())
+			ForgetGraphLine(flow, row.toString());
+		PutGraphNode(flow, guid, obj.value(g_key_name).toString(), obj.value(g_key_key).toString(),
+			obj.value(g_key_group).toString(), obj.value(g_key_x).toDouble(), obj.value(g_key_y).toDouble(),
+			obj.value(g_key_pins).toArray());
+		if (detail_kind_ == g_kind_node && detail_guid_ == guid)
+			Dispatch(Action::SelectNode, QJsonObject{{g_key_guid, guid}});
+		return;
+	}
 	const double x = obj.value(g_key_x).toDouble();
 	const double y = obj.value(g_key_y).toDouble();
 	MoveGraphNode(flow, guid, x, y);
@@ -1234,6 +1724,42 @@ void MainWindow::Slot_AltNode(const Message& msg)
 		SetDetailValue(g_key_x, x);
 		SetDetailValue(g_key_y, y);
 	}
+}
+
+void MainWindow::Slot_AddLine(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	if (msg.code != 0) { AppendLog(obj.value(g_key_error).toString()); return; }
+	const QString flow = obj.value(g_key_flow).toString();
+	for (const auto& old : obj.value(g_key_removed_lines).toArray())
+		ForgetGraphLine(flow, old.toString());
+	PutGraphLine(flow, obj.value(g_key_guid).toString(), obj.value(g_key_from_node).toString(), obj.value(g_key_from_pin).toString(), obj.value(g_key_to_node).toString(), obj.value(g_key_to_pin).toString());
+	if (detail_kind_ == g_kind_node) Dispatch(Action::SelectNode, QJsonObject{{g_key_guid, detail_guid_}});
+}
+
+void MainWindow::Slot_DelLine(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	if (msg.code != 0) { AppendLog(obj.value(g_key_error).toString()); return; }
+	const QString flow = obj.value(g_key_flow).toString();
+	ForgetGraphLine(flow, obj.value(g_key_guid).toString());
+	const QString target_guid = obj.value(g_key_to_node).toString();
+	const QString target_pin = obj.value(g_key_to_pin).toString();
+	if (!target_guid.isEmpty() && !target_pin.isEmpty()) {
+		auto nodes = flow_nodes_.find(flow.toStdString());
+		if (nodes != flow_nodes_.end()) for (auto& node : nodes->second) {
+			if (node.guid != target_guid || (node.key != QStringLiteral("Print") && node.name != QStringLiteral("Print"))) continue;
+			for (int i = 0; i < node.pins.size(); ++i) {
+				QJsonObject pin = node.pins.at(i).toObject();
+				if (pin.value(g_key_guid).toString() != target_pin) continue;
+				pin[g_key_value] = QString{};
+				node.pins[i] = pin;
+			}
+			if (auto* view = FindGraphView(flow)) view->setNodePins(node.guid, node.pins);
+			break;
+		}
+	}
+	if (detail_kind_ == g_kind_node) Dispatch(Action::SelectNode, QJsonObject{{g_key_guid, detail_guid_}});
 }
 
 void MainWindow::Slot_SelectFunc(const Message& msg)
@@ -1355,6 +1881,8 @@ void MainWindow::Slot_AltFunc(const Message& msg)
 				if (!old_name.isEmpty()) {
 					QSignalBlocker blocker(func_tree_);
 					item->setText(0, old_name);
+					if (detail_kind_ == g_kind_flow && detail_guid_ == guid)
+						SetDetailValue(g_key_name, old_name);
 				}
 			}
 			break;
@@ -1405,8 +1933,6 @@ void MainWindow::Slot_AddVar(const Message& msg)
 void MainWindow::Slot_DelVar(const Message& msg)
 {
 	do {
-		if (!var_tree_) break;
-
 		const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
 		if (msg.code != 0) {
 			const QString error = obj.value(g_key_error).toString();
@@ -1414,6 +1940,19 @@ void MainWindow::Slot_DelVar(const Message& msg)
 				AppendLog(error);
 			break;
 		}
+		for (const auto& row : obj.value(g_key_removed_lines).toArray()) {
+			const QJsonObject line = row.toObject();
+			ForgetGraphLine(line.value(g_key_flow).toString(), line.value(g_key_guid).toString());
+		}
+		for (const auto& row : obj.value(g_key_removed_nodes).toArray()) {
+			const QJsonObject node = row.toObject();
+			const QString flow = node.value(g_key_flow).toString();
+			const QString node_guid = node.value(g_key_guid).toString();
+			ForgetGraphNode(flow, node_guid);
+			if (detail_kind_ == g_kind_node && detail_guid_ == node_guid)
+				ClearDetails();
+		}
+		if (!var_tree_) break;
 
 		const QString guid = obj.value(g_key_guid).toString();
 		auto* item = FindTreeItem(var_tree_, guid);
@@ -1449,6 +1988,22 @@ void MainWindow::Slot_AltVar(const Message& msg)
 
 		const QString name = obj.value(g_key_name).toString();
 		if (!item || name.isEmpty()) break;
+		for (const auto& row : obj.value(g_key_removed_lines).toArray()) {
+			const QJsonObject line = row.toObject();
+			ForgetGraphLine(line.value(g_key_flow).toString(), line.value(g_key_guid).toString());
+		}
+		for (const auto& row : obj.value(g_key_nodes).toArray()) {
+			const QJsonObject entry = row.toObject();
+			const QString flow = entry.value(g_key_flow).toString();
+			const QJsonObject node = entry.value(g_key_node).toObject();
+			const QString node_guid = node.value(g_key_guid).toString();
+			PutGraphNode(flow, node_guid, node.value(g_key_name).toString(),
+				node.value(g_key_key).toString(), node.value(g_key_group).toString(),
+				node.value(g_key_x).toDouble(), node.value(g_key_y).toDouble(),
+				node.value(g_key_pins).toArray());
+			if (detail_kind_ == g_kind_node && detail_guid_ == node_guid)
+				Dispatch(Action::SelectNode, QJsonObject{{g_key_guid, node_guid}});
+		}
 
 		{
 			QSignalBlocker blocker(var_tree_);
@@ -1558,6 +2113,25 @@ void MainWindow::Slot_OpenBP(const Message& msg)
 			breadcrumb_->setText(QStringLiteral("%1 / %2").arg(space, name));
 		FillNamedItems(func_tree_, obj.value(g_key_flows).toArray());
 		FillNamedItems(var_tree_, obj.value(g_key_vars).toArray());
+		for (const auto& flow_value : obj.value(g_key_flows).toArray()) {
+			const QJsonObject flow = flow_value.toObject();
+			const QString flow_guid = flow.value(g_key_guid).toString();
+			for (const auto& node_value : flow.value(g_key_nodes).toArray()) {
+				const QJsonObject node = node_value.toObject();
+				PutGraphNode(flow_guid,
+					node.value(g_key_guid).toString(),
+					node.value(g_key_name).toString(),
+					node.value(g_key_key).toString(),
+					node.value(g_key_group).toString(),
+					node.value(g_key_x).toDouble(),
+					node.value(g_key_y).toDouble(),
+					node.value(g_key_pins).toArray());
+			}
+			for (const auto& line_value : flow.value(g_key_lines).toArray()) {
+				const QJsonObject line = line_value.toObject();
+				PutGraphLine(flow_guid, line.value(g_key_guid).toString(), line.value(g_key_from_node).toString(), line.value(g_key_from_pin).toString(), line.value(g_key_to_node).toString(), line.value(g_key_to_pin).toString());
+			}
+		}
 		FillTypeCombo(var_type_combo_, obj.value(g_key_types).toArray());
 		ShowDetails(obj);
 		if (auto* item = FindAssetItem(asset_tree_, guid))
@@ -1681,6 +2255,40 @@ void MainWindow::OnNodeMoved(const QString& guid, const QPointF& pos)
 	});
 }
 
+void MainWindow::OnLineRequested(const QString& flow, const QString& fromNode, const QString& fromPin, const QString& toNode, const QString& toPin)
+{
+	Dispatch(Action::AddLine, QJsonObject{
+		{g_key_flow, flow}, {g_key_from_node, fromNode}, {g_key_from_pin, fromPin},
+		{g_key_to_node, toNode}, {g_key_to_pin, toPin}
+	});
+}
+
+void MainWindow::OnPinMethodMenu(const QString& flow, const QString& fromNode, const QString& fromPin,
+	const QJsonArray& methods, const QPointF& scene_pos, const QPoint& global_pos)
+{
+	QMenu menu(this);
+	for (const auto& row : methods) {
+		const QJsonObject method = row.toObject();
+		const QString name = method.value(g_key_name).toString();
+		const QString key = method.value(g_key_key).toString();
+		if (name.isEmpty() || key.isEmpty())
+			continue;
+		auto* action = menu.addAction(name);
+		connect(action, &QAction::triggered, this, [this, flow, fromNode, fromPin, key, scene_pos] {
+			Dispatch(Action::AddNode, QJsonObject{
+				{g_key_guid, flow},
+				{g_key_key, key},
+				{g_key_x, scene_pos.x()},
+				{g_key_y, scene_pos.y()},
+				{g_key_from_node, fromNode},
+				{g_key_from_pin, fromPin},
+			});
+		});
+	}
+	if (!menu.isEmpty())
+		menu.exec(global_pos);
+}
+
 void MainWindow::OnFuncSelected(QTreeWidgetItem* item)
 {
 	if (!item) return;
@@ -1707,32 +2315,138 @@ void MainWindow::OnNodeSelected(const QString& guid)
 
 void MainWindow::OnRunFunc()
 {
-	QString flow_guid{};
-	Dispatch(Action::RunFunc, QJsonObject{{g_key_guid, flow_guid}});
+	if (!graph_tabs_ || graph_tabs_->currentIndex() < 0) {
+		AppendLog(QStringLiteral("Select a flow before running."));
+		return;
+	}
+	const QString flow_guid = graph_tabs_->tabData(graph_tabs_->currentIndex()).toString();
+	Dispatch(Action::RunFunc, QJsonObject{{g_key_asset, current_asset_guid_}, {g_key_flow, flow_guid}});
 }
 
 void MainWindow::OnCompile()
 {
-	struct BusyGuard {
-		QWidget* w{};
-		explicit BusyGuard(QWidget* w) : w(w)
-		{
-			w->setEnabled(false);
-			QApplication::setOverrideCursor(Qt::WaitCursor);
-			QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-		}
-		~BusyGuard()
-		{
-			QApplication::restoreOverrideCursor();
-			w->setEnabled(true);
-		}
-	} busy(this);
-
-	Dispatch(Action::Compile);
+	if (current_asset_guid_.isEmpty()) {
+		AppendLog(QStringLiteral("Select a Blueprint before compiling."));
+		return;
+	}
+	if (compile_btn_) compile_btn_->setEnabled(false);
+	AppendLog(QStringLiteral("Compiling Blueprint..."));
+	Dispatch(Action::Compile, QJsonObject{{g_key_guid, current_asset_guid_}});
 }
 
-void MainWindow::OnVarDropped(const QString&, const QString&, const QPointF&, Qt::KeyboardModifiers)
+void MainWindow::Slot_Compile(const Message& msg)
 {
+	if (compile_btn_) compile_btn_->setEnabled(true);
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	if (msg.code != 0) {
+		AppendLog(obj.value(g_key_error).toString().isEmpty()
+			? QStringLiteral("Blueprint compilation failed.")
+			: obj.value(g_key_error).toString());
+		const QString details = obj.value(g_key_text).toString();
+		if (!details.isEmpty()) AppendLog(details);
+		return;
+	}
+}
+
+void MainWindow::Slot_RunFunc(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	if (msg.code != 0) {
+		const QString error = obj.value(g_key_error).toString().isEmpty()
+			? QStringLiteral("Flow execution failed.") : obj.value(g_key_error).toString();
+		AppendLog(error);
+		statusBar()->showMessage(QStringLiteral("Flow execution failed."), 5000);
+		return;
+	}
+}
+
+void MainWindow::Slot_Output(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	const QString text = obj.value(g_key_text).toString();
+	if (!text.isEmpty()) AppendLog(text);
+}
+
+void MainWindow::Slot_RuntimeSync(const Message& msg)
+{
+	const QJsonObject obj = QJsonDocument::fromJson(QByteArray::fromStdString(msg.data)).object();
+	const QString flow = obj.value(g_key_flow).toString();
+	const QString phase = obj.value(g_key_phase).toString();
+	if (phase == QStringLiteral("started")) {
+		statusBar()->showMessage(QStringLiteral("Flow executing..."));
+		auto it = flow_nodes_.find(flow.toStdString());
+		if (it != flow_nodes_.end())
+			for (auto& node : it->second) {
+				SetGraphNodeRuntimeStatus(flow, node.guid, {});
+			}
+		return;
+	}
+	if (phase == QStringLiteral("node")) {
+		const QString guid = obj.value(g_key_guid).toString();
+		SetGraphNodeRuntimeStatus(flow, guid, obj.value(g_key_node_status).toString());
+		if (auto nodes = flow_nodes_.find(flow.toStdString()); nodes != flow_nodes_.end()) {
+			for (auto& node : nodes->second) {
+				if (node.guid != guid) continue;
+				for (const auto& runtime_row : obj.value(g_key_pins).toArray()) {
+					const QJsonObject runtime_pin = runtime_row.toObject();
+					for (int i = 0; i < node.pins.size(); ++i) {
+						auto pin_row = node.pins.at(i);
+						QJsonObject pin = pin_row.toObject();
+						if (pin.value(g_key_guid).toString() != runtime_pin.value(g_key_guid).toString()) continue;
+						pin[g_key_value] = runtime_pin.value(g_key_value);
+						node.pins[i] = pin;
+					}
+				}
+				if (auto* view = FindGraphView(flow)) view->setNodePins(node.guid, node.pins);
+				break;
+			}
+		}
+		if (detail_kind_ == g_kind_node && detail_guid_ == guid)
+			Dispatch(Action::SelectNode, QJsonObject{{g_key_guid, guid}});
+		return;
+	}
+	if (phase == QStringLiteral("finished")) {
+		if (detail_kind_ == g_kind_var) {
+			for (const auto& row : obj.value(g_key_vars).toArray()) {
+				const QJsonObject variable = row.toObject();
+				if (variable.value(g_key_guid).toString() == detail_guid_) {
+					SetDetailValue(g_key_value, DecodePinValue(variable.value(g_key_value).toString()));
+					break;
+				}
+			}
+		}
+		const QString status = obj.value(g_key_flow_status).toString(
+			msg.code == 0 ? QStringLiteral("Completed") : QStringLiteral("Failed"));
+		statusBar()->showMessage(status == QStringLiteral("Completed")
+			? QStringLiteral("Flow execution completed.")
+			: QStringLiteral("Flow execution failed."), 5000);
+		if (detail_kind_ == g_kind_flow && detail_guid_ == flow)
+			Dispatch(Action::SelectFunc, QJsonObject{{g_key_guid, flow}});
+	}
+}
+
+void MainWindow::OnVarDropped(const QString& name, const QString& guid, const QPointF& scene_pos, Qt::KeyboardModifiers)
+{
+	auto* view = qobject_cast<GraphView*>(sender());
+	if (!view || guid.isEmpty())
+		return;
+
+	QMenu menu(this);
+	auto* get = menu.addAction(QStringLiteral("Get %1").arg(name));
+	auto* set = menu.addAction(QStringLiteral("Set %1").arg(name));
+	const QAction* chosen = menu.exec(QCursor::pos());
+	if (chosen != get && chosen != set)
+		return;
+
+	const char* prefix = chosen == get ? g_node_get_var : g_node_set_var;
+	const QString key = QString::fromUtf8(prefix) + QStringLiteral(":") + guid;
+	Dispatch(Action::AddNode, QJsonObject{
+		{g_key_guid, view->guid()},
+		{g_key_key, key},
+		{g_key_target, guid},
+		{g_key_x, scene_pos.x()},
+		{g_key_y, scene_pos.y()},
+	});
 }
 
 void MainWindow::OnFuncDropped(const QString& guid, const QPointF& scene_pos)
@@ -1825,6 +2539,24 @@ void MainWindow::OnGraphMenu(const QString& flow_guid, const QPoint& global_pos,
 				});
 			});
 		}
+	}
+	for (const auto& row : system_funcs_) {
+		const QJsonObject obj = row.toObject();
+		if (obj.value(g_key_group).toString() != QString::fromUtf8(g_group_user))
+			continue;
+		const QString name = obj.value(g_key_name).toString();
+		const QString key = obj.value(g_key_key).toString();
+		if (name.isEmpty() || key.isEmpty())
+			continue;
+		auto* action = user->addAction(name);
+		connect(action, &QAction::triggered, this, [this, flow_guid, scene_pos, key] {
+			Dispatch(Action::AddNode, QJsonObject{
+				{g_key_guid, flow_guid},
+				{g_key_key, key},
+				{g_key_x, scene_pos.x()},
+				{g_key_y, scene_pos.y()},
+			});
+		});
 	}
 	menu.exec(global_pos);
 }

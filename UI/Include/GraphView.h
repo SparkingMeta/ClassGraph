@@ -12,6 +12,8 @@ class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
 class QEvent;
+class QGraphicsPathItem;
+class QKeyEvent;
 class QMouseEvent;
 class QObject;
 class QPainter;
@@ -36,6 +38,10 @@ public:
 	void addNode(const QString& guid, const QString& name, const QString& key, const QString& group, const QPointF& pos, const QJsonArray& pins);
 	void removeNode(const QString& guid);
 	void moveNode(const QString& guid, const QPointF& pos);
+	void setNodePins(const QString& guid, const QJsonArray& pins);
+	void setNodeRuntimeStatus(const QString& guid, const QString& status);
+	void addLine(const QString& guid, const QString& fromNode, const QString& fromPin, const QString& toNode, const QString& toPin);
+	void removeLine(const QString& guid);
 
 signals:
 	void functionDropped(const QString& guid, const QPointF& scene_pos);
@@ -43,6 +49,12 @@ signals:
 	void contextMenuRequested(const QString& guid, const QPoint& global_pos, const QPointF& scene_pos);
 	void deleteNodeRequested(const QString& guid, const QString& key);
 	void nodeMoved(const QString& guid, const QPointF& pos);
+	void nodeSelected(const QString& guid);
+	void pinValueEditRequested(const QString& node, const QString& pin, const QString& type, const QString& value);
+	void lineRequested(const QString& flow, const QString& fromNode, const QString& fromPin, const QString& toNode, const QString& toPin);
+	void methodMenuRequested(const QString& flow, const QString& fromNode, const QString& fromPin,
+		const QJsonArray& methods, const QPointF& scene_pos, const QPoint& global_pos);
+	void deleteLineRequested(const QString& guid);
 
 protected:
 	bool eventFilter(QObject* watched, QEvent* event) override;
@@ -50,14 +62,24 @@ protected:
 	void dragMoveEvent(QDragMoveEvent* event) override;
 	void dropEvent(QDropEvent* event) override;
 	void wheelEvent(QWheelEvent* event) override;
+	void keyPressEvent(QKeyEvent* event) override;
 	void mousePressEvent(QMouseEvent* event) override;
 	void mouseMoveEvent(QMouseEvent* event) override;
 	void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
+	void refreshLines();
+	void updateLinePreview(const QPointF& scene_pos);
+	void clearLinePreview();
+
 	QString guid_;
 	bool panning_{};
 	QPoint pan_origin_{};
-	QGraphicsItem* drag_item_{};
+	QString drag_node_guid_;
 	QPointF drag_origin_{};
+	QString pendingLineNode_;
+	QString pendingLinePin_;
+	QJsonArray pendingLineMethods_;
+	bool pendingLineIsOutputData_{};
+	QGraphicsPathItem* previewLine_{};
 };

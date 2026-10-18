@@ -35,6 +35,7 @@ namespace CG::Core {
 	struct PinMeta : Meta {
 		PinKind kind;
 		const VType* type{};
+		std::string value{};
 	};
 
 	struct LayoutMeta : Meta {

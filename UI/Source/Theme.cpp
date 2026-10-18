@@ -161,29 +161,64 @@ QLineEdit, QComboBox, QSpinBox {
 	padding: 4px 6px;
 	min-height: 20px;
 }
-QLineEdit#PinEditor {
-	padding: 0 4px;
-	min-height: 16px;
-	max-height: 18px;
-	background: #141414;
-	border: 1px solid #3a3a3a;
-}
-QCheckBox#PinEditor {
-	background: transparent;
-	spacing: 0;
-}
-QCheckBox#PinEditor::indicator {
-	width: 13px;
-	height: 13px;
-	border: 1px solid #5a5a5a;
-	background: #1a1a1a;
-}
-QCheckBox#PinEditor::indicator:checked {
-	background: #4a90c8;
-	border: 1px solid #6ab0e8;
-}
 QLineEdit:focus, QComboBox:focus {
 	border: 1px solid #3d5a73;
+}
+QToolButton#DetailSectionToggle {
+	background: transparent;
+	color: #d8dddd;
+	border: none;
+	padding: 5px 3px;
+	font-weight: bold;
+	text-align: left;
+}
+QToolButton#DetailSectionToggle:hover {
+	color: #ffffff;
+	background: #2b3031;
+}
+QLabel#DetailSectionBadge {
+	background: #263b3d;
+	color: #9dcfd0;
+	border: 1px solid #355456;
+	border-radius: 2px;
+	padding: 2px 6px;
+}
+QLineEdit#PinValueEdit {
+	background: #111718;
+	color: #e6ebea;
+	border: 1px solid #354143;
+	padding: 3px 7px;
+	min-height: 22px;
+}
+QLineEdit#PinValueEdit:focus {
+	border: 1px solid #58a6a8;
+}
+QLabel#PinParamLabel {
+	color: #aeb8b8;
+	min-width: 68px;
+}
+QLabel#PinValueDisplay {
+	color: #d8dfde;
+	background: #202727;
+	border: 1px solid #303b3b;
+	padding: 4px 7px;
+}
+QCheckBox#PinValueCheck {
+	background: transparent;
+	spacing: 8px;
+}
+QCheckBox#PinValueCheck::indicator {
+	width: 14px;
+	height: 14px;
+	border: 1px solid #586466;
+	background: #111718;
+}
+QCheckBox#PinValueCheck::indicator:checked {
+	background: #418f91;
+	border: 1px solid #70babc;
+}
+QWidget#DetailSection {
+	border-bottom: 1px solid #303536;
 }
 QComboBox::drop-down {
 	border: none;
@@ -303,6 +338,34 @@ QLineEdit#BlueprintNameEdit {
 }
 QSplitter::handle {
 	background: #000000;
+}
+)");
+}
+
+QString CG::Ui::PinEditorStyleSheet()
+{
+	return QStringLiteral(R"(
+QLineEdit#PinEditor {
+	padding: 0 4px;
+	min-height: 16px;
+	max-height: 18px;
+	background: #141414;
+	color: #e0e0e0;
+	border: 1px solid #3a3a3a;
+}
+QCheckBox#PinEditor {
+	background: transparent;
+	spacing: 0;
+}
+QCheckBox#PinEditor::indicator {
+	width: 13px;
+	height: 13px;
+	border: 1px solid #5a5a5a;
+	background: #1a1a1a;
+}
+QCheckBox#PinEditor::indicator:checked {
+	background: #4a90c8;
+	border: 1px solid #6ab0e8;
 }
 )");
 }

@@ -38,5 +38,6 @@ namespace CG::Ui{
 	}
 
 	QString StyleSheet();
+	QString PinEditorStyleSheet();
 
 }

@@ -6,6 +6,8 @@
 #include "event.h"
 #include "bus.h"
 #include "worker.h"
+#include "Base/VSystem.h"
+#include <nlohmann/json.hpp>
 
 #include "MainWindow.h"
 #include <QApplication>
@@ -64,13 +66,17 @@ int main(int argc, char* argv[])
 		window.Notify(msg);
 	});
 
-	engine.SetRise([&model](const Message& msg) {
-		model.Reply(msg);
-	});
-	engine.LoadTypes();
 	engine.SetRise([&rise_queue](const Message& msg) {
 		rise_queue->Push(Event{ EventId::EI_Rise, msg });
 	});
+	CG::Core::VSystem::Get().SetPrinter([&rise_queue](const std::string& text) {
+		Message output{};
+		output.act = cg::Action::LogOutput;
+		output.data = nlohmann::json{{g_key_text, text}, {g_key_source, "Print"}, {g_key_level, "info"}}.dump();
+		rise_queue->Push(Event{ EventId::EI_Rise, output });
+	});
+
+	engine.Load();
 
 	window.SetSink([&](const Message& msg) {
 		model.Submit(msg);
@@ -83,6 +89,7 @@ int main(int argc, char* argv[])
 
 	sink_worker->Stop();
 	rise_worker->Stop();
+	CG::Core::VSystem::Get().SetPrinter({});
 	model.SetRise(nullptr);
 	return code;
 }

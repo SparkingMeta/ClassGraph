@@ -1,6 +1,8 @@
 #pragma once
 #include "Abstract/AFlow.h"
 
+#include <functional>
+
 namespace CG::Core {
 	class VFlow : public AFlow {
 	public:

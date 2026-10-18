@@ -72,5 +72,5 @@ int CG::Core::VFlow::Run()
 
 void CG::Core::VFlow::Init()
 {
-	graph_ = std::make_shared<VGraph>(std::shared_ptr<AFlow>{});
+	graph_ = std::make_shared<VGraph>();
 }

@@ -1,16 +1,17 @@
 #include "Realistic/VGraph.h"
 #include "Abstract/ANode.h"
 #include "Abstract/AFlow.h"
+#include "Abstract/ALine.h"
 
 using namespace CG::Core;
 
-CG::Core::VGraph::VGraph(const std::shared_ptr<AFlow>& flow) : task_(flow)
+CG::Core::VGraph::VGraph()
 {
 }
 
 std::shared_ptr<AFlow> CG::Core::VGraph::GetFlow() const
 {
-	return task_.lock();
+	return flow_.lock();
 }
 
 std::shared_ptr<ANode> CG::Core::VGraph::GetEntry() const
@@ -54,5 +55,22 @@ std::shared_ptr<ANode> CG::Core::VGraph::FindNode(const std::string& guid) const
 
 void CG::Core::VGraph::SetFlow(const std::shared_ptr<AFlow>& flow)
 {
-	task_ = flow;
+	flow_ = flow;
+}
+
+void CG::Core::VGraph::AddLine(const std::shared_ptr<ALine>& line)
+{
+	if (line && !line->GetGuid().empty())
+		lines_[line->GetGuid()] = line;
+}
+
+void CG::Core::VGraph::DelLine(const std::string& guid)
+{
+	lines_.erase(guid);
+}
+
+std::shared_ptr<ALine> CG::Core::VGraph::FindLine(const std::string& guid) const
+{
+	if (auto it = lines_.find(guid); it != lines_.end()) return it->second;
+	return {};
 }

@@ -1,17 +1,21 @@
 #pragma once
 #include "Base/VObject.h"
-
 #include <optional>
+#include <functional>
 
 namespace CG::Core {
 	class ACaller;
 	class AContext;
 	class APin;
+	class ANode;
+
+	using WorkObserver = std::function<void(const std::shared_ptr<ANode>&, const Result&)>;
 
 	class ANode : public VObject {
 	public:
 		virtual ~ANode() = default;
 		virtual Result Work() = 0;
+		virtual void SetWorkObserver(WorkObserver observer) = 0;
 		virtual std::shared_ptr<ANode> Next(int index = 0) const = 0;
 		virtual std::shared_ptr<APin> GetInputPin(uint16 id) const = 0;
 		virtual std::shared_ptr<APin> GetOutputPin(uint16 id) const = 0;

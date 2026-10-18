@@ -3,10 +3,16 @@ set(App_Sources Source/main.cpp)
 add_executable(App ${App_Sources})
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${App_Sources})
 
+target_include_directories(App PRIVATE
+  ${PROJECT_SOURCE_DIR}/Core/Include
+  ${PROJECT_SOURCE_DIR}/Core/ThirdParty
+)
+
 target_link_libraries(App PRIVATE
   UI
   Model
   Engine
+  Core
 )
 target_compile_features(App PRIVATE cxx_std_20)
 

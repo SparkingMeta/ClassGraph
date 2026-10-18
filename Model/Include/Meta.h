@@ -2,6 +2,7 @@
 #include "Export.h"
 #include "message.h"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -16,6 +17,13 @@ enum NodeStatus{
 	NS_OK,
 };
 
+enum class FlowStatus : std::uint8_t {
+	Idle,
+	Running,
+	Completed,
+	Failed,
+};
+
 struct BaseMeta {
 	std::string name{};
 	std::string guid{};
@@ -26,6 +34,7 @@ struct PinMeta : BaseMeta {
 	int direct{};
 	std::string type{};
 	std::string value{};
+	bool connected{};
 };
 
 struct NodeMeta : BaseMeta {
@@ -38,9 +47,14 @@ struct NodeMeta : BaseMeta {
 struct LineMeta : BaseMeta {
 	std::string from{};
 	std::string to{};
+	std::string from_node{};
+	std::string from_pin{};
+	std::string to_node{};
+	std::string to_pin{};
 };
 
 struct FlowMeta : BaseMeta {
+	FlowStatus flow_status{FlowStatus::Idle};
 	std::unordered_map<std::string, std::shared_ptr<NodeMeta>> nodes{};
 	std::unordered_map<std::string, std::shared_ptr<LineMeta>> lines{};
 };
@@ -56,6 +70,8 @@ struct TypeMeta : BaseMeta {
 struct FuncMeta : BaseMeta {
 	std::string group{};
 	std::string key{};
+	std::vector<std::string> input_types{};
+	std::vector<std::string> output_types{};
 };
 
 struct AssetMeta : BaseMeta {

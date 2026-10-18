@@ -16,11 +16,14 @@ namespace CG::Core {
 		int GenerateCode(std::string& source, std::string& header, std::string& gen_header, std::string& meta);
 
 		std::string AddFlow(const std::string& name);
+		std::string AddFlow(const std::string& name, const std::string& guid);
 		void DelFlow(const std::string& guid);
 		std::shared_ptr<AFlow> FindFlow(const std::string& guid) const;
 		std::shared_ptr<AFlow> FindFlowByName(const std::string& name) const;
+		void ClearFlows();
 
 		std::string AddVar(const std::string& name, const std::string& type_name);
+		std::string AddVar(const std::string& name, const std::string& type_name, const std::string& guid);
 		void DelVar(const std::string& guid);
 		std::shared_ptr<AVariant> FindVar(const std::string& guid);
 

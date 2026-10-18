@@ -22,16 +22,21 @@ int CG::Core::VBlueprint::GenerateCode(std::string& source, std::string& header,
 
 std::string CG::Core::VBlueprint::AddFlow(const std::string& name)
 {
-	auto flow = std::make_shared<VFlow>();
+	return AddFlow(name, GenerateGUID());
+}
 
-	std::string guid = GenerateGUID();
+std::string CG::Core::VBlueprint::AddFlow(const std::string& name, const std::string& guid)
+{
+	if (guid.empty() || flows_.contains(guid))
+		return {};
+	auto flow = std::make_shared<VFlow>();
 
 	flow->SetGuid(guid);
 	flow->SetName(name);
 	auto script = std::make_shared<VScript>(flow);
 	script->SetName(name);
 	flow->BindScript(script);
-	if (auto graph = std::dynamic_pointer_cast<VGraph>(flow->GetGraph()))
+	if (auto graph = flow->GetGraph())
 		graph->SetFlow(flow);
 	flows_.insert({flow->GetGuid(), flow});
 	return guid;
@@ -58,18 +63,26 @@ std::shared_ptr<AFlow> CG::Core::VBlueprint::FindFlowByName(const std::string& n
 	return nullptr;
 }
 
+void CG::Core::VBlueprint::ClearFlows()
+{
+	flows_.clear();
+}
+
 std::string CG::Core::VBlueprint::AddVar(const std::string& name, const std::string& type_name)
 {
+	return AddVar(name, type_name, GenerateGUID());
+}
+
+std::string CG::Core::VBlueprint::AddVar(const std::string& name, const std::string& type_name, const std::string& guid)
+{
 	const VType* type = VTypeRegister::Find(type_name);
-	if (!type) return {};
+	if (!type || guid.empty() || vars_.contains(guid)) return {};
 
 	if(type_name == std::format("{}::{}",space_, GetName()))
 		return {};
 
 	auto var = std::make_shared<VVariant>(type);
 
-	std::string guid = GenerateGUID();
-	
 	var->SetGuid(guid);
 	var->SetName(name);
 	var->SetID(GetID());

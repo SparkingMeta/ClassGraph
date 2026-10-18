@@ -3,6 +3,7 @@
 
 #include "Export.h"
 #include "bus.h"
+#include "message.h"
 #include <functional>
 
 #include <QJsonArray>
@@ -34,41 +35,12 @@ class QToolButton;
 class QFrame;
 class QStackedWidget;
 
-enum Action {
-	AddBP,
-	DelBP,
-	AltBP,
-	OpenBP,
-	CloseBP,
-
-	AddFunc,
-	DelFunc,
-	AltFunc,
-	RunFunc,
-	SelectFunc,
-
-	AddVar,
-	DelVar,
-	AltVar,
-	SelectVar,
-
-	AddNode,
-	DelNode,
-	AltNode,
-	SelectNode,
-
-	Compile,
-	TypeSync,
-	FuncSync,
-};
-
 using Emiter = std::function<void(const Message&)>;
-
-
 
 class MACRO_UI_API MainWindow : public QMainWindow {
 	Q_OBJECT
 public:
+	using Action = cg::Action;
 	explicit MainWindow(QWidget* parent = nullptr);
 	~MainWindow() override;
 	void Notify(const Message& msg);
@@ -109,6 +81,9 @@ private slots:
 	void OnGraphTabClose(int index);
 	void OnGraphMenu(const QString& flow_guid, const QPoint& global_pos, const QPointF& scene_pos);
 	void OnNodeMoved(const QString& guid, const QPointF& pos);
+	void OnLineRequested(const QString& flow, const QString& fromNode, const QString& fromPin, const QString& toNode, const QString& toPin);
+	void OnPinMethodMenu(const QString& flow, const QString& fromNode, const QString& fromPin,
+		const QJsonArray& methods, const QPointF& scene_pos, const QPoint& global_pos);
 	
 	void OnLog(const QString& text);
 
@@ -144,6 +119,12 @@ private slots:
 	void Slot_AddNode(const Message& msg);
 	void Slot_DelNode(const Message& msg);
 	void Slot_AltNode(const Message& msg);
+	void Slot_AddLine(const Message& msg);
+	void Slot_DelLine(const Message& msg);
+	void Slot_Compile(const Message& msg);
+	void Slot_RunFunc(const Message& msg);
+	void Slot_RuntimeSync(const Message& msg);
+	void Slot_Output(const Message& msg);
 signals:
 	void Sig_AddBP(const Message& msg);
 	void Sig_DelBP(const Message& msg);
@@ -164,6 +145,12 @@ signals:
 	void Sig_AddNode(const Message& msg);
 	void Sig_DelNode(const Message& msg);
 	void Sig_AltNode(const Message& msg);
+	void Sig_AddLine(const Message& msg);
+	void Sig_DelLine(const Message& msg);
+	void Sig_Compile(const Message& msg);
+	void Sig_RunFunc(const Message& msg);
+	void Sig_RuntimeSync(const Message& msg);
+	void Sig_Output(const Message& msg);
 
 private:
 	template <typename Signal, typename Slot>
@@ -178,7 +165,7 @@ private:
 	void AppendLog(const QString& text);
 	void ClearLog();
 	
-	Emiter FindEmiter(int act) const;
+	Emiter FindEmiter(Action action) const;
 
 	void SetEditorVisible(bool visible);
 	void ResetEditor();
@@ -191,12 +178,18 @@ private:
 	void PutGraphNode(const QString& flow, const QString& guid, const QString& name, const QString& key, const QString& group, double x, double y, const QJsonArray& pins);
 	void ForgetGraphNode(const QString& flow, const QString& guid);
 	void MoveGraphNode(const QString& flow, const QString& guid, double x, double y);
+	void SetGraphNodeRuntimeStatus(const QString& flow, const QString& guid, const QString& status);
+	void PutGraphLine(const QString& flow, const QString& guid, const QString& fromNode, const QString& fromPin, const QString& toNode, const QString& toPin);
+	void ForgetGraphLine(const QString& flow, const QString& guid);
+	void RefreshGraphPinConnections(const QString& flow);
 	bool FlowHasNode(const QString& flow, const QString& key) const;
 	void RestoreGraphNodes(class GraphView* view);
 	void ShowDetails(const QJsonObject& detail);
 	void AppendDetails(const QJsonArray& fields, const QString& prefix);
+	void AppendDetailsTo(QFormLayout* form, const QJsonArray& fields, const QString& prefix);
 	void ClearDetails();
 	void SetDetailValue(const QString& key, const QJsonValue& value);
+	void CommitDetail(const QString& key, const QJsonValue& value);
 	bool eventFilter(QObject* watched, QEvent* event) override;
 
 	QStackedWidget* graph_stack_{};
@@ -243,8 +236,17 @@ private:
 		double x{};
 		double y{};
 		QJsonArray pins;
+		QString runtime_status;
+	};
+	struct GraphLineState {
+		QString guid;
+		QString fromNode;
+		QString fromPin;
+		QString toNode;
+		QString toPin;
 	};
 	std::unordered_map<std::string, std::vector<GraphNodeState>> flow_nodes_;
+	std::unordered_map<std::string, std::vector<GraphLineState>> flow_lines_;
 	
-	std::unordered_map<int, Emiter> emiters_;
+	std::unordered_map<Action, Emiter> emiters_;
 };

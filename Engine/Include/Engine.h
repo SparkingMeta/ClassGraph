@@ -16,11 +16,12 @@ public:
 
 	Engine(const Engine&) = delete;
 	Engine& operator=(const Engine&) = delete;
+	void Load();
 
 	void Apply(const Message& msg);
 	void SetRoot(const std::string& root);
 	void SetTypeDir(const std::string& dir);
-	void LoadTypes();
+
 	void SetRise(std::function<void(const Message&)> rise);
 private:
 	struct Impl;
