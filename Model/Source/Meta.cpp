@@ -225,7 +225,7 @@ private:
 	void FuncSync(const Message& msg);
 	void OnFuncSync(const Message& msg);
 	json FuncList() const;
-	void RebuildVariableFuncs();
+	void SyncVarFuncs();
 	void EmitFuncSync();
 	void AddFunc(const Message& msg);
 	void OnAddFunc(const Message& msg);
@@ -478,7 +478,7 @@ void Model::Impl::OnDelBP(const Message& msg)
 			opened_.clear();
 		assets_.erase(guid);
 		rise_(msg);
-		RebuildVariableFuncs();
+		SyncVarFuncs();
 		EmitFuncSync();
 
 	} while (0);
@@ -633,7 +633,7 @@ void Model::Impl::OnOpenBP(const Message& msg)
 		Message out = msg;
 		out.data = root.dump();
 		rise_(out);
-		RebuildVariableFuncs();
+		SyncVarFuncs();
 		EmitFuncSync();
 	} while (0);
 }
@@ -656,7 +656,7 @@ void Model::Impl::OnCloseBP(const Message& msg)
 			}
 		}
 		rise_(msg);
-		RebuildVariableFuncs();
+		SyncVarFuncs();
 		EmitFuncSync();
 	} while (0);
 }
@@ -730,7 +730,7 @@ void Model::Impl::OnFuncSync(const Message& msg)
 			funcs_.insert({func->name, func});
 		}
 
-		RebuildVariableFuncs();
+		SyncVarFuncs();
 		root[g_key_funcs] = FuncList();
 		Message out = msg;
 		out.data = root.dump();
@@ -763,7 +763,7 @@ json Model::Impl::FuncList() const
 	return out;
 }
 
-void Model::Impl::RebuildVariableFuncs()
+void Model::Impl::SyncVarFuncs()
 {
 	for (auto it = funcs_.begin(); it != funcs_.end();) {
 		if (it->second && it->second->group == g_group_user)
@@ -1035,7 +1035,7 @@ void Model::Impl::OnAddVar(const Message& msg)
 		var->value = root.value(g_key_value, std::string{});
 		asset->vars.insert({guid, var});
 		rise_(msg);
-		RebuildVariableFuncs();
+		SyncVarFuncs();
 		EmitFuncSync();
 	} while (0);
 }
@@ -1075,7 +1075,7 @@ void Model::Impl::OnDelVar(const Message& msg)
 				if (auto flow = FindFlow(*asset, flow_guid)) flow->lines.erase(line_guid);
 			}
 			asset->vars.erase(guid);
-			RebuildVariableFuncs();
+			SyncVarFuncs();
 		}
 		rise_(msg);
 		EmitFuncSync();
@@ -1145,7 +1145,7 @@ void Model::Impl::OnAltVar(const Message& msg)
 			if (auto flow = FindFlow(*asset, flow_guid)) flow->lines.erase(line_guid);
 		}
 		rise_(msg);
-		RebuildVariableFuncs();
+		SyncVarFuncs();
 		EmitFuncSync();
 	} while (0);
 }
