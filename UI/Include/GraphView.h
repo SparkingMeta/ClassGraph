@@ -55,6 +55,7 @@ signals:
 	void methodMenuRequested(const QString& flow, const QString& fromNode, const QString& fromPin,
 		const QJsonArray& methods, const QPointF& scene_pos, const QPoint& global_pos);
 	void deleteLineRequested(const QString& guid);
+	void dynamicPinActionRequested(const QString& node, const QString& pin, const QString& action);
 
 protected:
 	bool eventFilter(QObject* watched, QEvent* event) override;

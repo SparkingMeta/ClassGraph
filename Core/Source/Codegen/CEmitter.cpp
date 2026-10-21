@@ -102,6 +102,15 @@ namespace {
 			for (const auto& child : stmt.statements)
 				EmitStmt(out, *child, indent);
 			break;
+		case StmtKind::SK_Declare:
+			pad();
+			out << stmt.declaration_type << ' ' << stmt.declaration_name;
+			if (stmt.value) {
+				out << " = ";
+				EmitExpr(out, *stmt.value);
+			}
+			out << ";\n";
+			break;
 		case StmtKind::SK_Assign:
 			pad();
 			EmitExpr(out, *stmt.target);
@@ -143,11 +152,19 @@ namespace {
 			break;
 		case StmtKind::SK_For:
 			pad();
+			if (!stmt.result_name.empty() && !stmt.result_type.empty()) {
+				out << stmt.result_type << ' ' << stmt.result_name << " = {};\n";
+				pad();
+			}
 			out << "for (int " << stmt.index_name << " = ";
 			EmitExpr(out, *stmt.first);
 			out << "; " << stmt.index_name << " < ";
 			EmitExpr(out, *stmt.last);
 			out << "; ++" << stmt.index_name << ") {\n";
+			if (!stmt.result_name.empty()) {
+				for (int i = 0; i < indent + 1; ++i) out << '\t';
+				out << stmt.result_name << " = " << stmt.index_name << ";\n";
+			}
 			EmitStmt(out, *stmt.body, indent + 1);
 			pad();
 			out << "}\n";

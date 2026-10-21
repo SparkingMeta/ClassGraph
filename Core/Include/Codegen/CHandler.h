@@ -23,6 +23,10 @@ namespace CG::Core::cg {
 		virtual std::optional<std::unique_ptr<CStmt>> BuildStmt(CBuildContext& ctx, const std::shared_ptr<ANode>& node) const = 0;
 
 		virtual std::optional<std::unique_ptr<CExpr>> BuildExpr(CBuildContext& ctx, const std::shared_ptr<ANode>& node) const = 0;
+		virtual std::optional<std::unique_ptr<CExpr>> BuildOutputExpr(CBuildContext& ctx,
+			const std::shared_ptr<ANode>& node, const std::string&) const {
+			return BuildExpr(ctx, node);
+		}
 	};
 
 	class CHandlerRegistry {
@@ -39,6 +43,8 @@ namespace CG::Core::cg {
 	std::unique_ptr<CExpr> BuildExpr(CBuildContext& ctx, const std::shared_ptr<ANode>& node, const std::string& arg_name);
 
 	std::unique_ptr<CExpr> BuildExpr(CBuildContext& ctx, const std::shared_ptr<ANode>& node);
+	std::unique_ptr<CExpr> BuildOutputExpr(CBuildContext& ctx, const std::shared_ptr<ANode>& node,
+		const std::string& output_name);
 
 	std::unique_ptr<CStmt> BuildStmtChain(CBuildContext& ctx, const std::shared_ptr<ANode>& entry);
 

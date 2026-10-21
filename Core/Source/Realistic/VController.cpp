@@ -5,6 +5,11 @@
 #include "Realistic/VFrame.h"
 #include "Base/VRegister.h"
 
+#include <algorithm>
+#include <charconv>
+#include <limits>
+#include <unordered_set>
+
 using namespace CG::Core;
 
 namespace {
@@ -54,7 +59,7 @@ CG::Core::FSwitchInt::FSwitchInt()
 	meta_.name = "SwitchInt";
 
 	meta_.args.emplace_back(ArgMeta{{{}, g_key_cond},false, true, FindType(typeid(int))});
-	meta_.args.emplace_back(ArgMeta{{{},"case_0"},true, false, FindType(typeid(int))});
+	meta_.args.emplace_back(ArgMeta{{{}, "case_0"}, true, false, FindType(typeid(int)), "0"});
 	meta_.args.emplace_back(ArgMeta{{{}, g_key_default},true, false, nullptr});
 }
 
@@ -63,35 +68,41 @@ ExecMeta CG::Core::FSwitchInt::GetExecMeta() const
 	return ExecMeta{ {}, true, false };
 }
 
-std::string CG::Core::FSwitchInt::AddCase()
+std::string CG::Core::FSwitchInt::AddCase(const std::string& requested_name)
 {
 	const VType* type = FindType(typeid(int));
 	if (!type)
 		return {};
 
-	int n = 0;
-	for (;;) {
-		const std::string name = "case_" + std::to_string(n);
-		bool used = false;
-		for (const auto& arg : meta_.args) {
-			if (arg.name == name) {
-				used = true;
+	std::string name = requested_name;
+	if (name.empty()) {
+		for (int n = 0;; ++n) {
+			name = "case_" + std::to_string(n);
+			if (std::none_of(meta_.args.begin(), meta_.args.end(), [&](const auto& arg) { return arg.name == name; }))
 				break;
-			}
 		}
-		if (!used) {
-			auto it = meta_.args.end();
-			for (auto i = meta_.args.begin(); i != meta_.args.end(); ++i) {
-				if (i->is_output && i->name == g_key_default) {
-					it = i;
-					break;
-				}
-			}
-			meta_.args.insert(it, ArgMeta{ {{}, name}, true, false, type });
-			return name;
-		}
-		++n;
 	}
+	if (name == g_key_cond || name == g_key_default
+		|| std::any_of(meta_.args.begin(), meta_.args.end(), [&](const auto& arg) { return arg.name == name; }))
+		return {};
+	auto it = std::find_if(meta_.args.begin(), meta_.args.end(), [](const auto& arg) {
+		return arg.is_output && arg.name == g_key_default;
+	});
+	std::unordered_set<int> used_values;
+	for (const auto& arg : meta_.args) {
+		if (!arg.is_output || arg.is_runtime || arg.name.rfind("case_", 0) != 0)
+			continue;
+		const auto& case_text = arg.value;
+		int value = 0;
+		const auto parsed = std::from_chars(case_text.data(), case_text.data() + case_text.size(), value);
+		if (!case_text.empty() && parsed.ec == std::errc{} && parsed.ptr == case_text.data() + case_text.size())
+			used_values.insert(value);
+	}
+	int next_value = 0;
+	while (used_values.contains(next_value) && next_value < (std::numeric_limits<int>::max)()) ++next_value;
+	if (used_values.contains(next_value)) return {};
+	meta_.args.insert(it, ArgMeta{{{}, name}, true, false, type, std::to_string(next_value)});
+	return name;
 }
 
 bool CG::Core::FSwitchInt::DelCase(const std::string& name)
@@ -105,6 +116,30 @@ bool CG::Core::FSwitchInt::DelCase(const std::string& name)
 		}
 	}
 	return false;
+}
+
+bool CG::Core::FSwitchInt::SetCaseValue(const std::string& name, const std::string& value)
+{
+	int parsed_value = 0;
+	const auto parsed = std::from_chars(value.data(), value.data() + value.size(), parsed_value);
+	if (value.empty() || parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+		return false;
+	auto target = std::find_if(meta_.args.begin(), meta_.args.end(), [&](const auto& arg) {
+		return arg.is_output && !arg.is_runtime && arg.name == name && name.rfind("case_", 0) == 0;
+	});
+	if (target == meta_.args.end()) return false;
+	for (const auto& arg : meta_.args) {
+		if (!arg.is_output || arg.is_runtime || arg.name.rfind("case_", 0) != 0 || arg.name == name)
+			continue;
+		const auto& other_text = arg.value;
+		int other_value = 0;
+		const auto other_parsed = std::from_chars(other_text.data(), other_text.data() + other_text.size(), other_value);
+		if (!other_text.empty() && other_parsed.ec == std::errc{}
+			&& other_parsed.ptr == other_text.data() + other_text.size() && other_value == parsed_value)
+			return false;
+	}
+	target->value = value;
+	return true;
 }
 
 Status CG::Core::FSwitchInt::Init(AContext* ctx)
@@ -268,6 +303,7 @@ Status CG::Core::FLoop::Init(AContext* ctx)
 		status.cond = cond;
 		status.first = first;
 		status.last = last;
+		status.out = first;
 		status.index = first;
 		code = 0;
 	} while (0);
@@ -312,6 +348,39 @@ CG::Core::FSequence::FSequence()
 	meta_.args.emplace_back(ArgMeta{ {{},"then_1"}, true, false, nullptr });
 }
 
+std::string CG::Core::FSequence::AddThen(const std::string& requested_name)
+{
+	std::string name = requested_name;
+	if (name.empty()) {
+		for (int n = 0;; ++n) {
+			name = "then_" + std::to_string(n);
+			if (std::none_of(meta_.args.begin(), meta_.args.end(), [&](const auto& arg) { return arg.name == name; }))
+				break;
+		}
+	}
+	if (name.rfind("then_", 0) != 0
+		|| std::any_of(meta_.args.begin(), meta_.args.end(), [&](const auto& arg) { return arg.name == name; }))
+		return {};
+	meta_.args.emplace_back(ArgMeta{{{}, name}, true, false, nullptr});
+	return name;
+}
+
+bool CG::Core::FSequence::DelThen(const std::string& name)
+{
+	const auto count = std::count_if(meta_.args.begin(), meta_.args.end(), [](const auto& arg) {
+		return arg.is_output && !arg.is_runtime && arg.name.rfind("then_", 0) == 0;
+	});
+	if (count <= 1)
+		return false;
+	for (auto it = meta_.args.begin(); it != meta_.args.end(); ++it) {
+		if (it->is_output && !it->is_runtime && it->name == name && name.rfind("then_", 0) == 0) {
+			meta_.args.erase(it);
+			return true;
+		}
+	}
+	return false;
+}
+
 ExecMeta CG::Core::FSequence::GetExecMeta() const
 {
 	return ExecMeta{ {}, true, false };
@@ -328,6 +397,7 @@ Status CG::Core::FSequence::Init(AContext* ctx)
 			break;
 
 		status.index = 0;
+		status.out = 0;
 		code = 0;
 	} while (0);
 
@@ -341,11 +411,11 @@ void CG::Core::FSequence::Invoke(AContext* ctx, Status& status)
 	do {
 		auto outputs = GetOutputs(ctx, meta_);
 
-		bool loop = false;
-		if(status.index++ < outputs.size() - 1)
-			loop = true;
+		if (outputs.empty() || status.out < 0 || status.out >= static_cast<int>(outputs.size()))
+			break;
 
-		status.loop = loop;
+		status.index = status.out++;
+		status.loop = status.out < static_cast<int>(outputs.size());
 		code = 0;
 	} while (0);
 

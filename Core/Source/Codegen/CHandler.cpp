@@ -13,6 +13,8 @@
 #include "Realistic/VScript.h"
 #include "Realistic/VBlueprintObject.h"
 
+#include <algorithm>
+
 using namespace CG::Core;
 using namespace CG::Core::cg;
 
@@ -20,19 +22,7 @@ namespace {
 
 	std::unique_ptr<CExpr> ResolveArgExpr(CBuildContext& ctx, const std::shared_ptr<ANode>& node, const std::string& arg_name)
 	{
-		if (auto upstream = GetFromNode(node, arg_name)) {
-			if (dynamic_cast<const FEntry*>(upstream->GetCaller().get())) {
-				auto out_name = GetFromOutArg(node, arg_name);
-				if (!out_name.empty())
-					return MakeLiteral(out_name);
-			}
-			return BuildExpr(ctx, upstream);
-		}
-		if (ctx.method_params.count(arg_name))
-			return MakeLiteral(arg_name);
-		if (auto pin = FindInPin(node, arg_name))
-			return MakeLiteral(ToLiteral(pin->GetFrame()));
-		return nullptr;
+		return BuildExpr(ctx, node, arg_name);
 	}
 
 	std::vector<std::unique_ptr<CExpr>> CollectInputExprs(CBuildContext& ctx,
@@ -53,8 +43,12 @@ namespace {
 	std::unique_ptr<CExpr> LowerEmitExpr(CBuildContext& ctx, const std::shared_ptr<ANode>& node, const ACaller* caller)
 	{
 		if (!caller) return nullptr;
-		auto inputs = CollectInputExprs(ctx, node, caller->GetCallMeta(), caller->GetKind() == CK_Function);
-		if (inputs.empty() && !caller->GetCallMeta().args.empty())
+		const auto call_meta = caller->GetCallMeta();
+		auto inputs = CollectInputExprs(ctx, node, call_meta, caller->GetKind() == CK_Function);
+		const bool has_inputs = std::any_of(call_meta.args.begin(), call_meta.args.end(), [](const auto& arg) {
+			return !arg.is_output;
+		});
+		if (inputs.empty() && has_inputs)
 			return nullptr;
 
 		const auto& emit = caller->GetEmitMeta();
@@ -213,11 +207,37 @@ namespace {
 			if (!fn || fn->IsPure()) return std::nullopt;
 			auto expr = BuildClassMethodCallExpr(ctx, node, fn);
 			if (!expr) return std::nullopt;
+			const auto& meta = fn->GetFuncMeta();
+			if (meta.index >= 0 && static_cast<size_t>(meta.index) < meta.args.size()) {
+				const auto& result = meta.args[meta.index];
+				if (result.is_output && result.type) {
+					const std::string temp = "__cg_call_result_" + std::to_string(ctx.next_codegen_temp++);
+					ctx.call_result_names[node.get()] = temp;
+					ctx.expr_cache.erase(node.get());
+					ctx.output_expr_cache.erase(node.get());
+					return MakeDeclare(CastType(result.type), temp, std::move(expr.value()));
+				}
+			}
 			return MakeExprStmt(std::move(expr.value()));
 		}
 		std::optional<std::unique_ptr<CExpr>> BuildExpr(CBuildContext& ctx, const std::shared_ptr<ANode>& node) const override {
 			auto fn = dynamic_cast<const VFunction*>(node->GetCaller().get());
 			if (!fn) return std::nullopt;
+			if (auto it = ctx.call_result_names.find(node.get()); it != ctx.call_result_names.end())
+				return MakeMember(it->second);
+			return BuildClassMethodCallExpr(ctx, node, fn);
+		}
+		std::optional<std::unique_ptr<CExpr>> BuildOutputExpr(CBuildContext& ctx,
+			const std::shared_ptr<ANode>& node, const std::string& output_name) const override {
+			auto fn = dynamic_cast<const VFunction*>(node->GetCaller().get());
+			if (!fn) return std::nullopt;
+			const auto& meta = fn->GetFuncMeta();
+			if (meta.index < 0 || static_cast<size_t>(meta.index) >= meta.args.size())
+				return std::nullopt;
+			if (meta.args[meta.index].name != output_name)
+				return std::nullopt;
+			if (auto it = ctx.call_result_names.find(node.get()); it != ctx.call_result_names.end())
+				return MakeMember(it->second);
 			return BuildClassMethodCallExpr(ctx, node, fn);
 		}
 	};
@@ -335,18 +355,51 @@ namespace {
 			return dynamic_cast<const FLoop*>(caller) != nullptr;
 		}
 		std::optional<std::unique_ptr<CStmt>> BuildStmt(CBuildContext& ctx, const std::shared_ptr<ANode>& node) const override {
+			auto cond = ResolveArgExpr(ctx, node, "cond");
 			auto first = ResolveArgExpr(ctx, node, "first");
 			auto last = ResolveArgExpr(ctx, node, "last");
-			if (!first || !last) return std::nullopt;
+			if (!cond || !first || !last) return std::nullopt;
+			const auto layout = ResolveLayout(node);
+			const PinMeta* result_output = nullptr;
+			size_t data_output_count = 0;
+			for (const auto& output : layout.outputs) {
+				if (output.kind != PinKind::Data) continue;
+				++data_output_count;
+				result_output = &output;
+			}
+
+			std::string result_name;
+			std::string result_type;
+			const std::string index_name = "__cg_loop_index_" + std::to_string(ctx.next_codegen_temp++);
+			const std::string first_name = "__cg_loop_first_" + std::to_string(ctx.next_codegen_temp++);
+			const std::string last_name = "__cg_loop_last_" + std::to_string(ctx.next_codegen_temp++);
+			if (data_output_count == 1 && result_output && result_output->type && !result_output->name.empty()) {
+				result_name = "__cg_loop_result_" + std::to_string(ctx.next_codegen_temp++);
+				result_type = CastType(result_output->type);
+				ctx.output_expr_names[node.get()][result_output->name] = result_name;
+			}
 
 			std::vector<std::unique_ptr<CStmt>> statements;
-			statements.push_back(MakeFor("index", std::move(first), std::move(last),
-				EmptyOr(BuildStmtChain(ctx, NextExec(node, "body")))));
+			if (!result_name.empty() && !result_type.empty())
+				statements.push_back(MakeDeclare(result_type, result_name, MakeLiteral("{}")));
+			statements.push_back(MakeDeclare("int", first_name, std::move(first)));
+			statements.push_back(MakeDeclare("int", last_name, std::move(last)));
+			auto loop = MakeFor(index_name, MakeMember(first_name), MakeMember(last_name),
+				EmptyOr(BuildStmtChain(ctx, NextExec(node, "body"))), result_name);
+			statements.push_back(MakeIf(std::move(cond), std::move(loop), MakeCompound({})));
 			AppendAfterController(ctx, node, "completed", statements);
 			return MakeCompound(std::move(statements));
 		}
 		std::optional<std::unique_ptr<CExpr>> BuildExpr(CBuildContext&, const std::shared_ptr<ANode>&) const override {
 			return std::nullopt;
+		}
+		std::optional<std::unique_ptr<CExpr>> BuildOutputExpr(CBuildContext& ctx,
+			const std::shared_ptr<ANode>& node, const std::string& output_name) const override {
+			auto outputs = ctx.output_expr_names.find(node.get());
+			if (outputs == ctx.output_expr_names.end()) return std::nullopt;
+			auto value = outputs->second.find(output_name);
+			if (value == outputs->second.end()) return std::nullopt;
+			return MakeMember(value->second);
 		}
 	};
 
@@ -458,15 +511,32 @@ std::unique_ptr<CExpr> CG::Core::cg::BuildExpr(CBuildContext& ctx, const std::sh
 	return std::move(result.value());
 }
 
+std::unique_ptr<CExpr> CG::Core::cg::BuildOutputExpr(CBuildContext& ctx,
+	const std::shared_ptr<ANode>& node, const std::string& output_name)
+{
+	if (!node || output_name.empty()) return nullptr;
+	if (auto outputs = ctx.output_expr_cache.find(node.get()); outputs != ctx.output_expr_cache.end()) {
+		if (auto cached = outputs->second.find(output_name); cached != outputs->second.end())
+			return CloneExpr(*cached->second);
+	}
+
+	const ICHandler* handler = DefaultHandlers().Find(node->GetCaller().get());
+	if (!handler) return nullptr;
+	auto result = handler->BuildOutputExpr(ctx, node, output_name);
+	if (!result) return nullptr;
+	ctx.output_expr_cache[node.get()].emplace(output_name, CloneExpr(*result.value()));
+	return std::move(result.value());
+}
+
 std::unique_ptr<CExpr> CG::Core::cg::BuildExpr(CBuildContext& ctx, const std::shared_ptr<ANode>& node, const std::string& arg_name)
 {
 	if (auto upstream = GetFromNode(node, arg_name)) {
+		const auto out_name = GetFromOutArg(node, arg_name);
 		if (dynamic_cast<const FEntry*>(upstream->GetCaller().get())) {
-			auto out_name = GetFromOutArg(node, arg_name);
 			if (!out_name.empty())
 				return MakeLiteral(out_name);
 		}
-		return BuildExpr(ctx, upstream);
+		return BuildOutputExpr(ctx, upstream, out_name);
 	}
 	if (ctx.method_params.count(arg_name))
 		return MakeLiteral(arg_name);

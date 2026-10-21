@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <typeindex>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -48,13 +49,20 @@ namespace CG::Core {
 		
 		void SetPrinter(Printer handler);
 		void Print(const std::string& text) const;
+		template<typename T>
+		requires (!std::is_same_v<T, std::string>)
+		void Print(const T& value) const {
+			Print(FindType(typeid(T)), static_cast<const void*>(&value));
+		}
 
 		void UnloadDll(const std::string& class_key);
+		void UnloadAllDlls();
 		VClass* LoadDll(const std::string& path);
 
 	private:
 		VSystem();
 		~VSystem();
+		void Print(const VType* type, const void* value) const;
 		Printer printer_;
 		std::unordered_map<std::string, void*> type_modules_;
 	};

@@ -10,6 +10,8 @@
 #include <QGraphicsRectItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsProxyWidget>
+#include <QGraphicsSceneHoverEvent>
+#include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
 #include <QCheckBox>
 #include <QDoubleValidator>
@@ -34,6 +36,7 @@
 #include <QWheelEvent>
 
 #include <cmath>
+#include <algorithm>
 
 GraphScene::GraphScene(QObject* parent)
 	: QGraphicsScene(parent)
@@ -114,6 +117,7 @@ public:
 		setData(1, key);
 		setFlag(QGraphicsItem::ItemIsSelectable);
 		setFlag(QGraphicsItem::ItemIsMovable);
+		setAcceptHoverEvents(true);
 		setPins(pins);
 	}
 
@@ -170,6 +174,45 @@ public:
 		for (const auto& pin : outputs_)
 			if (pin.guid == guid) return !pin.exec;
 		return false;
+	}
+
+	bool isDynamicController() const { return key_ == QStringLiteral("Sequence") || key_ == QStringLiteral("SwitchInt"); }
+	bool isDynamicOutput(const DrawnPin& pin) const
+	{
+		return isDynamicController() && pin.exec && !pin.input
+			&& ((key_ == QStringLiteral("Sequence") && pin.name.startsWith(QStringLiteral("then_")))
+				|| (key_ == QStringLiteral("SwitchInt") && pin.name.startsWith(QStringLiteral("case_"))));
+	}
+	QString dynamicAddAction() const { return key_ == QStringLiteral("Sequence") ? QStringLiteral("add_then") : QStringLiteral("add_case"); }
+	QString dynamicDeleteAction(const DrawnPin&) const { return key_ == QStringLiteral("Sequence") ? QStringLiteral("delete_then") : QStringLiteral("delete_case"); }
+	int dynamicOutputCount() const
+	{
+		return static_cast<int>(std::count_if(outputs_.cbegin(), outputs_.cend(), [this](const DrawnPin& pin) {
+			return isDynamicOutput(pin);
+		}));
+	}
+
+	QString dynamicActionAt(const QPointF& pos) const
+	{
+		if (!isDynamicController()) return {};
+		if (dynamicOutputCount() > 1) for (const auto& pin : outputs_) {
+			if (!isDynamicOutput(pin) || !deleteButtonRect(pin).contains(pos)) continue;
+			return dynamicDeleteAction(pin) + QLatin1Char('\n') + pin.guid;
+		}
+		if (add_button_rect_.contains(pos)) return dynamicAddAction();
+		return {};
+	}
+
+	void setHoverPos(const QPointF& pos)
+	{
+		QString hovered;
+		if (isDynamicController() && dynamicOutputCount() > 1)
+			for (const auto& pin : outputs_)
+				if (isDynamicOutput(pin) && deleteButtonRect(pin).contains(pos)) { hovered = pin.guid; break; }
+		if (hovered != hovered_dynamic_pin_) {
+			hovered_dynamic_pin_ = hovered;
+			update();
+		}
 	}
 
 	QJsonArray methodsForOutputPin(const QString& guid) const
@@ -246,6 +289,23 @@ public:
 			if (i < outputs_.size())
 				paintPin(painter, outputs_.at(i), bounds_.right(), cy);
 		}
+		if (isDynamicController()) {
+			painter->setPen(QPen(QColor(205, 213, 214, 210), 1.0));
+			painter->setBrush(QColor(30, 35, 36, 235));
+			painter->drawEllipse(add_button_rect_);
+			const QPointF center = add_button_rect_.center();
+			painter->drawLine(QPointF(center.x() - 3, center.y()), QPointF(center.x() + 3, center.y()));
+			painter->drawLine(QPointF(center.x(), center.y() - 3), QPointF(center.x(), center.y() + 3));
+			if (dynamicOutputCount() > 1) for (const auto& pin : outputs_) {
+				if (!isDynamicOutput(pin) || pin.guid != hovered_dynamic_pin_) continue;
+				const QRectF button = deleteButtonRect(pin);
+				painter->setPen(QPen(QColor(255, 205, 194), 1.2));
+				painter->setBrush(QColor(125, 48, 42, 245));
+				painter->drawEllipse(button);
+				painter->drawLine(QPointF(button.center().x() - 3, button.center().y()),
+					QPointF(button.center().x() + 3, button.center().y()));
+			}
+		}
 	}
 
 	void setRuntimeStatus(const QString& status)
@@ -257,6 +317,39 @@ public:
 	void setDefaultEditCallback(std::function<void(const QString&, const QString&, const QString&)> callback)
 	{
 		default_edit_callback_ = std::move(callback);
+	}
+
+	void setDynamicPinCallback(std::function<void(const QString&, const QString&, const QString&)> callback)
+	{
+		dynamic_pin_callback_ = std::move(callback);
+	}
+
+protected:
+	void mousePressEvent(QGraphicsSceneMouseEvent* event) override
+	{
+		if (event && event->button() == Qt::LeftButton && dynamic_pin_callback_) {
+			const QString action = dynamicActionAt(event->pos());
+			if (!action.isEmpty()) {
+				const int split = action.indexOf(QLatin1Char('\n'));
+				dynamic_pin_callback_(data(0).toString(), split < 0 ? QString{} : action.mid(split + 1),
+					split < 0 ? action : action.left(split));
+				event->accept();
+				return;
+			}
+		}
+		QGraphicsItem::mousePressEvent(event);
+	}
+
+	void hoverMoveEvent(QGraphicsSceneHoverEvent* event) override
+	{
+		if (event) setHoverPos(event->pos());
+		QGraphicsItem::hoverMoveEvent(event);
+	}
+
+	void hoverLeaveEvent(QGraphicsSceneHoverEvent* event) override
+	{
+		setHoverPos({});
+		QGraphicsItem::hoverLeaveEvent(event);
 	}
 
 private:
@@ -281,8 +374,14 @@ private:
 			width = qMax(width, row);
 		}
 		width = qMax<qreal>(width, 168);
-		const qreal height = header_h_ + 4 + qMax(1, rows) * row_h_ + 8;
+		const bool dynamic = isDynamicController();
+		if (dynamic) width += 20;
+		const qreal height = header_h_ + 4 + (qMax(1, rows) + (dynamic ? 1 : 0)) * row_h_ + 8;
 		bounds_ = QRectF(0, 0, width, height);
+		if (dynamic) {
+			const qreal y = header_h_ + 4 + rows * row_h_ + row_h_ * 0.5;
+			add_button_rect_ = QRectF(bounds_.right() - 25, y - 8, 16, 16);
+		} else add_button_rect_ = {};
 		QVector<QGraphicsProxyWidget*> active_editors;
 		for (int i = 0; i < inputs_.size(); ++i) {
 			const auto& pin = inputs_.at(i);
@@ -350,6 +449,12 @@ private:
 		for (auto* editor : editors_)
 			if (!active_editors.contains(editor)) delete editor;
 		editors_ = active_editors;
+	}
+
+	QRectF deleteButtonRect(const DrawnPin& pin) const
+	{
+		const QPointF anchor = pinAnchor(pin.guid);
+		return QRectF(bounds_.right() - 15, anchor.y() - 8, 14, 16);
 	}
 
 	void paintPin(QPainter* painter, const DrawnPin& pin, qreal edge, qreal cy) const
@@ -425,7 +530,10 @@ private:
 	QVector<DrawnPin> outputs_;
 	QVector<QGraphicsProxyWidget*> editors_;
 	std::function<void(const QString&, const QString&, const QString&)> default_edit_callback_;
+	std::function<void(const QString&, const QString&, const QString&)> dynamic_pin_callback_;
 	QRectF bounds_;
+	QRectF add_button_rect_;
+	QString hovered_dynamic_pin_;
 	qreal header_h_{32};
 	qreal row_h_{28};
 };
@@ -514,6 +622,9 @@ void GraphView::addNode(const QString& guid, const QString& name, const QString&
 	auto* node = new GraphNodeItem(guid, name, key, group, pins);
 	node->setDefaultEditCallback([this, guid](const QString& pin, const QString& type, const QString& value) {
 		emit pinValueEditRequested(guid, pin, type, value);
+	});
+	node->setDynamicPinCallback([this](const QString& node_guid, const QString& pin, const QString& action) {
+		emit dynamicPinActionRequested(node_guid, pin, action);
 	});
 	node->setPos(pos);
 	scene()->addItem(node);
@@ -783,6 +894,15 @@ void GraphView::mousePressEvent(QMouseEvent* event)
 	if (event->button() == Qt::LeftButton && scene()) {
 		const QPointF scene_pos = mapToScene(event->pos());
 		if (auto* item = dynamic_cast<GraphNodeItem*>(scene()->itemAt(scene_pos, QTransform()))) {
+			const QString dynamic_action = item->dynamicActionAt(item->mapFromScene(scene_pos));
+			if (!dynamic_action.isEmpty()) {
+				const int split = dynamic_action.indexOf(QLatin1Char('\n'));
+				emit dynamicPinActionRequested(item->data(0).toString(),
+					split < 0 ? QString{} : dynamic_action.mid(split + 1),
+					split < 0 ? dynamic_action : dynamic_action.left(split));
+				event->accept();
+				return;
+			}
 			const QString pin = item->pinAt(item->mapFromScene(scene_pos));
 			if (!pin.isEmpty()) {
 				pendingLineNode_ = item->data(0).toString();

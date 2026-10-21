@@ -1030,6 +1030,12 @@ void MainWindow::OpenGraphPage(const QString& guid, const QString& name)
 				}
 				Dispatch(Action::AltNode, QJsonObject{{g_key_guid, node}, {g_key_pin, pin}, {g_key_value, serialized}});
 			});
+		connect(view, &GraphView::dynamicPinActionRequested, this,
+			[this](const QString& node, const QString& pin, const QString& action) {
+				QJsonObject body{{g_key_guid, node}, {g_key_param_action, action}};
+				if (!pin.isEmpty()) body.insert(g_key_pin, pin);
+				Dispatch(Action::AltNode, body);
+			});
 		connect(view, &GraphView::lineRequested, this, &MainWindow::OnLineRequested);
 		connect(view, &GraphView::methodMenuRequested, this, &MainWindow::OnPinMethodMenu);
 		connect(view, &GraphView::deleteLineRequested, this, [this](const QString& guid) {
@@ -1199,9 +1205,10 @@ void MainWindow::AppendDetailsTo(QFormLayout* form, const QJsonArray& fields, co
 			const QJsonArray columns = field.value(g_key_columns).toArray();
 			if (detail_kind_ == QString::fromUtf8(g_kind_node) && key == QString::fromUtf8(g_key_pins)) {
 				const bool can_edit_params = field.value(g_key_editable).toBool();
+				const bool can_edit_pin_list = can_edit_params;
 				QString pin_prefix = prefix.isEmpty() ? key : prefix + QStringLiteral(".") + key;
 				if (!pin_prefix.isEmpty()) pin_prefix += QLatin1Char('.');
-				auto* pins_section = makeSection(list_title, [this, groups, pin_prefix, can_edit_params, &makeSection](QFormLayout* pin_list) {
+					auto* pins_section = makeSection(list_title, [this, groups, pin_prefix, can_edit_pin_list, &makeSection](QFormLayout* pin_list) {
 					for (const auto& group_row : groups) {
 						const QJsonObject group = group_row.toObject();
 						const QString pin_guid = group.value(g_key_key).toString();
@@ -1257,8 +1264,19 @@ void MainWindow::AppendDetailsTo(QFormLayout* form, const QJsonArray& fields, co
 								if (!editable || detail_key.isEmpty())
 									continue;
 								if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
-									connect(edit, &QLineEdit::editingFinished, this, [this, detail_key, edit] {
+									const QString param_action = pin_field.value(g_key_param_action).toString();
+									connect(edit, &QLineEdit::editingFinished, this, [this, detail_key, edit, param_action, pin_guid] {
+										if (param_action.isEmpty()) {
 										CommitDetail(detail_key, edit->text());
+										return;
+									}
+									bool valid = false;
+									edit->text().toInt(&valid);
+									if (!valid) { AppendLog(QStringLiteral("Invalid case value.")); return; }
+									Dispatch(Action::AltNode, QJsonObject{
+										{g_key_guid, detail_guid_}, {g_key_pin, pin_guid},
+										{g_key_value, edit->text()}, {g_key_param_action, param_action},
+									});
 									});
 								} else if (auto* check = qobject_cast<QCheckBox*>(widget)) {
 									connect(check, &QCheckBox::toggled, this, [this, detail_key](bool value) {
@@ -1271,7 +1289,7 @@ void MainWindow::AppendDetailsTo(QFormLayout* form, const QJsonArray& fields, co
 							detail_fields_.insert({type_key.toStdString(), DetailField{type_label, [](QWidget* widget, const QJsonValue& value) {
 								if (auto* label = qobject_cast<QLabel*>(widget)) label->setText(DetailText(value));
 							}}});
-						if (can_edit_params) {
+						if (can_edit_pin_list) {
 							auto* toggle = pin_section->findChild<QToolButton*>(QStringLiteral("DetailSectionToggle"));
 							auto* header = toggle ? toggle->parentWidget() : nullptr;
 							auto* header_layout = header ? qobject_cast<QHBoxLayout*>(header->layout()) : nullptr;
@@ -1284,7 +1302,7 @@ void MainWindow::AppendDetailsTo(QFormLayout* form, const QJsonArray& fields, co
 								connect(remove, &QToolButton::clicked, this, [this, node_guid = detail_guid_, pin_guid] {
 									Dispatch(Action::AltNode, QJsonObject{
 										{g_key_guid, node_guid},
-										{g_key_param_action, QStringLiteral("delete")},
+									{g_key_param_action, QStringLiteral("delete")},
 										{g_key_pin, pin_guid},
 									});
 								});
@@ -1292,7 +1310,7 @@ void MainWindow::AppendDetailsTo(QFormLayout* form, const QJsonArray& fields, co
 						}
 						pin_list->addRow(pin_section);
 					}
-					if (can_edit_params) {
+						if (can_edit_pin_list) {
 						auto* editor = new QWidget(details_host_);
 						auto* editor_layout = new QHBoxLayout(editor);
 						editor_layout->setContentsMargins(0, 4, 0, 0);
@@ -1329,6 +1347,19 @@ void MainWindow::AppendDetailsTo(QFormLayout* form, const QJsonArray& fields, co
 						};
 						connect(add, &QToolButton::clicked, this, add_param);
 						connect(name_edit, &QLineEdit::returnPressed, this, add_param);
+					}
+					if (false) {
+						auto* add = new QToolButton(details_host_);
+						add->setText(QStringLiteral("+"));
+						add->setToolTip(QStringLiteral("娣诲姞鍒嗘敮"));
+						add->setAutoRaise(true);
+						pin_list->addRow(add);
+						connect(add, &QToolButton::clicked, this, [this, node_guid = detail_guid_] {
+							Dispatch(Action::AltNode, QJsonObject{
+								{g_key_guid, node_guid},
+								{g_key_param_action, QStringLiteral("add_then")},
+							});
+						});
 					}
 				}, {});
 				form->addRow(pins_section);

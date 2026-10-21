@@ -226,12 +226,13 @@ void CG::Core::VNode::ApplyMeta(const std::string& renamed_from, const std::stri
 		if (!frame) {
 			const bool wildcard = arg.is_runtime && arg.type == nullptr;
 			context_->SetFrame(arg.name, std::make_shared<VFrame>(arg.type, wildcard));
-			continue;
-		}
-		if (arg.type && frame->GetType() && arg.type != frame->GetType()) {
+			frame = context_->GetFrame(arg.name);
+		} else if (arg.type && frame->GetType() && arg.type != frame->GetType()) {
 			if (auto vf = std::dynamic_pointer_cast<VFrame>(frame))
 				vf->Reset(arg.type);
 		}
+		if (frame && !arg.value.empty())
+			if (auto value = FromString(arg.value, arg.type)) frame->Update(value);
 	}
 	if (ctx) {
 		for (const auto& name : ctx->FrameNames()) {

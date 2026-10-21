@@ -23,6 +23,7 @@ public:
 	void SetTypeDir(const std::string& dir);
 
 	void SetRise(std::function<void(const Message&)> rise);
+	void SetOutputHandler(std::function<void(const std::string&)> handler);
 private:
 	struct Impl;
 	std::unique_ptr<Impl> impl_;

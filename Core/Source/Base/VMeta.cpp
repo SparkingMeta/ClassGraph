@@ -15,6 +15,7 @@ LayoutMeta CG::Core::BuildLayout(const ExecMeta& exec_meta, const CallMeta& call
 		PinMeta pin_meta;
 		pin_meta.name = arg.name;
 		pin_meta.type = arg.type;
+		pin_meta.value = arg.value;
 		pin_meta.kind = arg.is_runtime ? PinKind::Data : PinKind::Exec;
 
 		if (arg.is_output)

@@ -16,6 +16,7 @@ namespace CG::Core {
 		bool is_output{false};
 		bool is_runtime{true};
 		const VType* type{};
+		std::string value{};
 	};
 
 	struct CallMeta : Meta {

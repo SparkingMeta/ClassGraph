@@ -19,7 +19,12 @@ void CG::Core::VExecPin::BindLine(std::shared_ptr<ALine> line)
 
 void CG::Core::VExecPin::UnbindLine(std::shared_ptr<ALine> line)
 {
-	line_ = nullptr;
+	if (!line || line_ != line) return;
+	if (GetDirect() == EDirect::In)
+		line->SetTo({});
+	else
+		line->SetFrom({});
+	line_.reset();
 }
 
 std::shared_ptr<ALine> CG::Core::VExecPin::GetLine() const

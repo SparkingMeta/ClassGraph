@@ -29,6 +29,7 @@ namespace CG::Core::cg {
 
 	enum class StmtKind {
 		SK_Compound,
+		SK_Declare,
 		SK_Assign,
 		SK_ExprStmt,
 		SK_Return,
@@ -55,7 +56,11 @@ namespace CG::Core::cg {
 		std::unique_ptr<CStmt> body;
 		std::vector<std::unique_ptr<CStmt>> statements;
 		std::vector<CCase> cases;
+		std::string declaration_type;
+		std::string declaration_name;
 		std::string index_name;
+		std::string result_name;
+		std::string result_type;
 		std::unique_ptr<CExpr> first;
 		std::unique_ptr<CExpr> last;
 	};
@@ -110,12 +115,15 @@ namespace CG::Core::cg {
 		std::vector<std::unique_ptr<CExpr>> args);
 	std::unique_ptr<CExpr> MakeCall(std::string callee, std::vector<std::unique_ptr<CExpr>> args);
 	std::unique_ptr<CStmt> MakeCompound(std::vector<std::unique_ptr<CStmt>> statements);
+	std::unique_ptr<CStmt> MakeDeclare(std::string type, std::string name, std::unique_ptr<CExpr> value = {});
 	std::unique_ptr<CStmt> MakeAssign(std::unique_ptr<CExpr> target, std::unique_ptr<CExpr> value);
 	std::unique_ptr<CStmt> MakeExprStmt(std::unique_ptr<CExpr> expr);
 	std::unique_ptr<CStmt> MakeReturn(std::unique_ptr<CExpr> value);
 	std::unique_ptr<CStmt> MakeIf(std::unique_ptr<CExpr> cond, std::unique_ptr<CStmt> then_br, std::unique_ptr<CStmt> else_br);
 	std::unique_ptr<CStmt> MakeWhile(std::unique_ptr<CExpr> cond, std::unique_ptr<CStmt> body);
-	std::unique_ptr<CStmt> MakeFor(std::string index_name, std::unique_ptr<CExpr> first, std::unique_ptr<CExpr> last, std::unique_ptr<CStmt> body);
+	std::unique_ptr<CStmt> MakeFor(std::string index_name, std::unique_ptr<CExpr> first,
+		std::unique_ptr<CExpr> last, std::unique_ptr<CStmt> body, std::string result_name = {},
+		std::string result_type = {});
 	std::unique_ptr<CStmt> MakeSwitch(std::unique_ptr<CExpr> cond, std::vector<CCase> cases);
 
 	std::unique_ptr<CExpr> CloneExpr(const CExpr& expr);

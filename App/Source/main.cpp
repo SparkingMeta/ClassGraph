@@ -6,12 +6,12 @@
 #include "event.h"
 #include "bus.h"
 #include "worker.h"
-#include "Base/VSystem.h"
-#include <nlohmann/json.hpp>
 
 #include "MainWindow.h"
 #include <QApplication>
 #include <QDir>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QStyleFactory>
 
 int main(int argc, char* argv[])
@@ -69,10 +69,15 @@ int main(int argc, char* argv[])
 	engine.SetRise([&rise_queue](const Message& msg) {
 		rise_queue->Push(Event{ EventId::EI_Rise, msg });
 	});
-	CG::Core::VSystem::Get().SetPrinter([&rise_queue](const std::string& text) {
+	engine.SetOutputHandler([&rise_queue](const std::string& text) {
 		Message output{};
 		output.act = cg::Action::LogOutput;
-		output.data = nlohmann::json{{g_key_text, text}, {g_key_source, "Print"}, {g_key_level, "info"}}.dump();
+		const QJsonObject payload{
+			{QString::fromUtf8(g_key_text), QString::fromStdString(text)},
+			{QString::fromUtf8(g_key_source), QStringLiteral("Print")},
+			{QString::fromUtf8(g_key_level), QStringLiteral("info")},
+		};
+		output.data = QJsonDocument(payload).toJson(QJsonDocument::Compact).toStdString();
 		rise_queue->Push(Event{ EventId::EI_Rise, output });
 	});
 
@@ -89,7 +94,7 @@ int main(int argc, char* argv[])
 
 	sink_worker->Stop();
 	rise_worker->Stop();
-	CG::Core::VSystem::Get().SetPrinter({});
+	engine.SetOutputHandler({});
 	model.SetRise(nullptr);
 	return code;
 }

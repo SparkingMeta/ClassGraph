@@ -138,7 +138,7 @@ namespace {
 	{
 		auto print = std::make_shared<FPrint>();
 		print->SetName("Print");
-		BindEmit(print, EmitKind::EmitSymbol, {}, "std::cout", " << std::endl", { "<iostream>" });
+		BindEmit(print, EmitKind::EmitCall, {}, "CG::Core::VSystem::Get().Print", {}, { "Base/VSystem.h" });
 		system.RegisterCaller(print);
 
 		auto branch = std::make_shared<FBranch>();
@@ -199,6 +199,16 @@ void VSystem::Print(const std::string& text) const
 {
 	if (printer_)
 		printer_(text);
+}
+
+void VSystem::Print(const VType* type, const void* value) const
+{
+	if (!type || !value || !type->serialize_)
+		return;
+
+	std::string text;
+	if (type->serialize_(value, text))
+		Print(text);
 }
 
 void VSystem::Init()
@@ -295,6 +305,12 @@ void VSystem::UnloadDll(const std::string& class_key)
 		FreeLibrary(static_cast<HMODULE>(it->second));
 #endif
 	type_modules_.erase(it);
+}
+
+void VSystem::UnloadAllDlls()
+{
+	while (!type_modules_.empty())
+		UnloadDll(type_modules_.begin()->first);
 }
 
 VClass* VSystem::LoadDll(const std::string& path)

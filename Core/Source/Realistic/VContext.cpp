@@ -89,6 +89,10 @@ void CG::Core::VContext::Init(const CallMeta& meta)
 	for (const auto& e : meta.args) {
 		const bool wildcard = e.is_runtime && e.type == nullptr;
 		auto frame = std::make_shared<VFrame>(e.type, wildcard);
+		if (!e.value.empty()) {
+			if (auto value = FromString(e.value, e.type))
+				frame->Update(value);
+		}
 		frames_.insert({ e.name, frame });
 	}
 }

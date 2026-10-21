@@ -1,4 +1,8 @@
 #include "Engine.h"
+#ifdef _WIN32
+#include <Windows.h>
+#endif
+
 #include "Abstract/ACaller.h"
 #include "Abstract/AFlow.h"
 #include "Abstract/APin.h"
@@ -18,11 +22,13 @@
 #include "Realistic/VVarFunction.h"
 #include "Realistic/VFunction.h"
 #include "Realistic/VLine.h"
+#include "Realistic/VController.h"
 #include "Base/VGuid.h"
 #include "Base/VRegister.h"
 #include "core_paths.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <filesystem>
 #include <format>
@@ -35,9 +41,6 @@
 #include <utility>
 #include <tuple>
 #include <nlohmann/json.hpp>
-#ifdef _WIN32
-#include <Windows.h>
-#endif
 using json = nlohmann::json;
 
 namespace cg::engine {
@@ -161,61 +164,16 @@ bool Exists(const fs::path& file)
 	return fs::exists(file, ec);
 }
 
-fs::path LatestBlueprintDll(const fs::path& generated_dir, const std::string& config)
+std::pair<fs::path, fs::path> BlueprintLinkArtifacts(const fs::path& library_dir,
+	const std::string& type_name)
 {
-	const fs::path build_root = generated_dir / "build";
-	std::error_code ec;
-	fs::path latest_dll;
-	fs::file_time_type latest_time{};
-	for (fs::directory_iterator build(build_root, ec), end; !ec && build != end; build.increment(ec)) {
-		const fs::path config_dir = build->path() / FromUtf8(config);
-		std::error_code config_ec;
-		for (fs::directory_iterator file(config_dir, config_ec), file_end; !config_ec && file != file_end; file.increment(config_ec)) {
-			if (!file->is_regular_file(config_ec) || config_ec)
-				continue;
-			const std::string filename = ToUtf8(file->path().filename());
-			if (file->path().extension() != ".dll" || filename.rfind("BlueprintRuntime", 0) != 0)
-				continue;
-			const auto modified = fs::last_write_time(file->path(), config_ec);
-			if (!config_ec && (latest_dll.empty() || modified > latest_time)) {
-				latest_dll = file->path();
-				latest_time = modified;
-			}
-		}
-	}
-	return latest_dll;
-}
-
-std::pair<fs::path, fs::path> LatestBlueprintLinkArtifacts(const fs::path& generated_dir,
-	const std::string& config)
-{
-	const fs::path build_root = generated_dir / "build";
-	std::error_code ec;
-	fs::path latest_dll, latest_lib;
-	fs::file_time_type latest_time{};
-	for (fs::directory_iterator build(build_root, ec), end; !ec && build != end; build.increment(ec)) {
-		const fs::path config_dir = build->path() / FromUtf8(config);
-		std::error_code config_ec;
-		for (fs::directory_iterator file(config_dir, config_ec), file_end; !config_ec && file != file_end; file.increment(config_ec)) {
-			if (!file->is_regular_file(config_ec) || config_ec || file->path().extension() != ".dll")
-				continue;
-			const std::string filename = ToUtf8(file->path().filename());
-			if (filename.rfind("BlueprintRuntime_", 0) != 0)
-				continue;
-			fs::path lib = file->path();
-			lib.replace_extension(".lib");
-			std::error_code lib_ec;
-			if (!fs::is_regular_file(lib, lib_ec) || lib_ec)
-				continue;
-			const auto modified = fs::last_write_time(file->path(), config_ec);
-			if (!config_ec && (latest_dll.empty() || modified > latest_time)) {
-				latest_dll = file->path();
-				latest_lib = std::move(lib);
-				latest_time = modified;
-			}
-		}
-	}
-	return {latest_dll, latest_lib};
+	const fs::path dll = library_dir / FromUtf8(type_name + ".dll");
+	fs::path lib = dll;
+	lib.replace_extension(".lib");
+	std::error_code dll_ec, lib_ec;
+	if (!fs::is_regular_file(dll, dll_ec) || dll_ec || !fs::is_regular_file(lib, lib_ec) || lib_ec)
+		return {};
+	return {dll, lib};
 }
 
 std::set<std::string> BlueprintTypeHeaders(const CG::Core::VBlueprint& asset)
@@ -248,6 +206,59 @@ std::set<std::string> BlueprintTypeHeaders(const CG::Core::VBlueprint& asset)
 		}
 	}
 	return headers;
+}
+
+std::string TypeKeyFromHeader(const std::string& header)
+{
+	const fs::path path = FromUtf8(header);
+	if (path.is_absolute() || path.extension() != ".h" || path.parent_path().empty())
+		return {};
+	std::string key;
+	for (const auto& part : path.parent_path()) {
+		if (!key.empty())
+			key += "::";
+		key += ToUtf8(part);
+	}
+	if (key.empty())
+		return {};
+	return key + "::" + ToUtf8(path.stem());
+}
+
+std::set<std::string> BlueprintDependencies(const fs::path& generated_header,
+	const std::string& self)
+{
+	std::set<std::string> dependencies;
+	std::ifstream input(generated_header);
+	std::string line;
+	while (std::getline(input, line)) {
+		const size_t begin = line.find("#include \"");
+		if (begin == std::string::npos)
+			continue;
+		const size_t path_begin = begin + 10;
+		const size_t path_end = line.find('"', path_begin);
+		if (path_end == std::string::npos)
+			continue;
+		const std::string header = line.substr(path_begin, path_end - path_begin);
+		const std::string key = TypeKeyFromHeader(header);
+		if (!key.empty() && key != self)
+			dependencies.insert(key);
+	}
+	return dependencies;
+}
+
+std::string TypeKeyFromModulePath(const fs::path& root, const fs::path& module)
+{
+	std::error_code ec;
+	const fs::path relative = fs::relative(module, root, ec);
+	if (ec || relative.empty() || relative.extension() != ".dll" || relative.parent_path().empty())
+		return {};
+	std::string key;
+	for (const auto& part : relative.parent_path()) {
+		if (!key.empty())
+			key += "::";
+		key += ToUtf8(part);
+	}
+	return key.empty() ? std::string{} : key + "::" + ToUtf8(relative.stem());
 }
 
 bool WriteText(const fs::path& file, const std::string& text)
@@ -792,8 +803,64 @@ void RestorePinGuids(const std::shared_ptr<CG::Core::VNode>& node, const json& r
 						frame->Update(value);
 				}
 			}
+			if (meta.kind == CG::Core::PinKind::Exec && pins[i]->GetDirect() == CG::Core::EDirect::Out
+				&& node->GetContext()) {
+				const std::string value = rows[i].value(g_key_value, meta.value);
+				if (!value.empty()) {
+					meta.value = value;
+					pins[i]->SetPinMeta(meta);
+					if (auto frame = node->GetContext()->GetFrame(meta.name))
+						if (auto parsed = CG::Core::FromString(value, frame->GetType())) frame->Update(parsed);
+				}
+			}
 		}
 	}
+}
+
+void RestoreDynamicControllerPins(const std::shared_ptr<CG::Core::VNode>& node, const json& rows)
+{
+	if (!node || !rows.is_array()) return;
+	auto caller = node->GetCaller();
+	auto sequence = std::dynamic_pointer_cast<CG::Core::FSequence>(caller);
+	auto switch_int = std::dynamic_pointer_cast<CG::Core::FSwitchInt>(caller);
+	if (!sequence && !switch_int) return;
+	std::unordered_set<std::string> desired;
+	for (const auto& row : rows) {
+		if (!row.is_object() || row.value(g_key_direct, 0) != static_cast<int>(CG::Core::EDirect::Out)
+			|| row.value(g_key_kind, 0) != static_cast<int>(CG::Core::PinKind::Exec))
+			continue;
+		const std::string name = row.value(g_key_name, std::string{});
+		if (name.empty()) continue;
+		desired.insert(name);
+		if (sequence && name.rfind("then_", 0) == 0)
+			sequence->AddThen(name);
+		else if (switch_int && name.rfind("case_", 0) == 0) {
+			switch_int->AddCase(name);
+			const std::string value = row.value(g_key_value, std::string{});
+			if (!value.empty()) switch_int->SetCaseValue(name, value);
+		}
+	}
+	for (const auto& pin : node->GetOutputPins()) {
+		if (!pin || pin->GetPinMeta().kind != CG::Core::PinKind::Exec) continue;
+		const std::string name = pin->GetPinMeta().name;
+		if (desired.contains(name)) continue;
+		if (sequence && name.rfind("then_", 0) == 0) sequence->DelThen(name);
+		if (switch_int && name.rfind("case_", 0) == 0) switch_int->DelCase(name);
+	}
+	node->ApplyMeta();
+}
+
+std::shared_ptr<CG::Core::ACaller> MakeNodeCaller(const std::shared_ptr<CG::Core::ACaller>& prototype)
+{
+	if (!prototype) return {};
+	std::shared_ptr<CG::Core::ACaller> caller;
+	if (std::dynamic_pointer_cast<CG::Core::FSequence>(prototype))
+		caller = std::make_shared<CG::Core::FSequence>();
+	else if (std::dynamic_pointer_cast<CG::Core::FSwitchInt>(prototype))
+		caller = std::make_shared<CG::Core::FSwitchInt>();
+	if (!caller) return prototype;
+	caller->SetName(prototype->GetName());
+	return caller;
 }
 
 struct VariableNodeSnapshot {
@@ -968,7 +1035,9 @@ public:
 	void SetRoot(const std::string& root);
 	void SetTypeDir(const std::string& dir);
 	void Load();
+	void Shutdown();
 	void SetRise(std::function<void(const Message&)> fn);
+	void SetOutputHandler(std::function<void(const std::string&)> handler);
 	void Apply(const Message& msg);
 
 private:
@@ -1007,13 +1076,17 @@ private:
 Engine::Engine() : impl_(std::make_unique<Impl>()) {
 	impl_->Init();
 }
-Engine::~Engine() = default;
+Engine::~Engine()
+{
+	if (impl_) impl_->Shutdown();
+}
 
 void Engine::Apply(const Message& msg) { impl_->Apply(msg); }
 void Engine::SetRoot(const std::string& root) { impl_->SetRoot(root); }
 void Engine::SetTypeDir(const std::string& dir) { impl_->SetTypeDir(dir); }
 void Engine::Load() { impl_->Load(); }
 void Engine::SetRise(std::function<void(const Message&)> rise) { impl_->SetRise(std::move(rise)); }
+void Engine::SetOutputHandler(std::function<void(const std::string&)> handler) { impl_->SetOutputHandler(std::move(handler)); }
 
 void Engine::Impl::Init()
 {
@@ -1047,6 +1120,15 @@ void Engine::Impl::SetTypeDir(const std::string& dir)
 {
 	std::lock_guard lock(mutex_);
 	type_dir_ = FromUtf8(dir);
+}
+
+void Engine::Impl::Shutdown()
+{
+	std::lock_guard lock(mutex_);
+	assets_.clear();
+	handlers_.clear();
+	rise_ = {};
+	CG::Core::VSystem::Get().UnloadAllDlls();
 }
 
 bool Engine::Impl::Persist(const std::shared_ptr<CG::Core::VBlueprint>& asset)
@@ -1178,13 +1260,14 @@ void Engine::Impl::LoadAssets()
 										if (source_flow) caller = std::dynamic_pointer_cast<CG::Core::ACaller>(source_flow->GetScript());
 									}
 								}
-								if (caller) node = CG::Core::VNode::Make(caller);
+								if (caller) node = CG::Core::VNode::Make(MakeNodeCaller(caller));
 							}
 							if (node) {
 								node->SetGuid(node_guid);
 								node->SetName(node_row.value(g_key_name, node->GetName()));
 								node->SetCoord(Vec2f{static_cast<float>(x), static_cast<float>(y)});
-								RestorePinGuids(node, node_row.value(g_key_pins, json::array()));
+								const auto saved_pins = node_row.value(g_key_pins, json::array());
+								RestoreDynamicControllerPins(node, saved_pins);
 								graph->AddNode(node);
 							}
 						}
@@ -1256,50 +1339,88 @@ void Engine::Impl::PublishTypes()
 void Engine::Impl::Load()
 {
 	CG::Core::VSystem::Get().Init();
-	std::vector<fs::path> modules;
 	std::error_code ec;
+	std::unordered_map<std::string, fs::path> modules;
 	if (!type_dir_.empty() && fs::exists(type_dir_, ec)) {
-		for (fs::directory_iterator it(type_dir_, ec), end; !ec && it != end; it.increment(ec)) {
-			if (!it->is_regular_file(ec) || ec)
+		std::error_code module_ec;
+		for (fs::recursive_directory_iterator it(type_dir_, module_ec), end;
+			!module_ec && it != end; it.increment(module_ec)) {
+			const auto extension = it->path().extension().string();
+			if (!it->is_regular_file(module_ec) || module_ec || (extension != ".dll" && extension != ".DLL"))
 				continue;
-			const auto ext = it->path().extension().string();
-			if (ext == ".dll" || ext == ".DLL")
-				modules.push_back(it->path());
+			const std::string key = TypeKeyFromModulePath(type_dir_, it->path());
+			if (!key.empty())
+				modules[key] = it->path();
 		}
 	}
 
-	ec.clear();
+#ifdef _WIN32
+	if (!modules.empty()) {
+		SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS);
+		std::set<std::wstring> library_dirs;
+		for (const auto& [key, module] : modules) {
+			(void)key;
+			library_dirs.insert(module.parent_path().native());
+		}
+		for (const auto& directory : library_dirs)
+			AddDllDirectory(directory.c_str());
+	}
+#endif
+	std::unordered_map<std::string, fs::path> generated_headers;
 	if (!root_.empty() && fs::exists(root_, ec) && fs::is_directory(root_, ec)) {
-		for (fs::directory_iterator spaces(root_, ec), end; !ec && spaces != end; spaces.increment(ec)) {
-			if (!spaces->is_directory(ec) || ec)
+		std::error_code spaces_ec;
+		for (fs::directory_iterator space(root_, spaces_ec), end; !spaces_ec && space != end; space.increment(spaces_ec)) {
+			if (!space->is_directory(spaces_ec) || spaces_ec)
 				continue;
-			std::error_code generated_ec;
-			for (fs::directory_iterator generated(spaces->path(), generated_ec), generated_end;
-				!generated_ec && generated != generated_end; generated.increment(generated_ec)) {
-				if (!generated->is_directory(generated_ec) || generated_ec)
+			std::error_code types_ec;
+			for (fs::directory_iterator type(space->path(), types_ec), type_end;
+				!types_ec && type != type_end; type.increment(types_ec)) {
+				if (!type->is_regular_file(types_ec) || types_ec || type->path().extension() != kAssetExt)
 					continue;
-				// A generated module is owned by the blueprint asset with the same
-				// name. This prevents stale build directories from registering the
-				// same class a second time during startup.
-				const fs::path asset_file = spaces->path()
-					/ FromUtf8(ToUtf8(generated->path().filename()) + kAssetExt);
-				std::error_code asset_ec;
-				if (!fs::is_regular_file(asset_file, asset_ec) || asset_ec)
-					continue;
-				const fs::path build_root = generated->path() / "build";
-				std::error_code build_ec;
-				if (!fs::is_directory(build_root, build_ec) || build_ec
-					|| !fs::is_regular_file(generated->path() / "CMakeLists.txt", build_ec))
-					continue;
-				const fs::path latest_dll = LatestBlueprintDll(generated->path(), CLASSGRAPH_BUILD_CONFIG);
-				if (!latest_dll.empty())
-					modules.push_back(latest_dll);
+				const std::string space_name = ToUtf8(space->path().filename());
+				const std::string type_name = ToUtf8(type->path().stem());
+				generated_headers.emplace(space_name + "::" + type_name,
+					type->path().parent_path() / FromUtf8(type_name) / FromUtf8(type_name + ".h"));
 			}
 		}
 	}
 
-	for (const auto& module : modules)
-		CG::Core::VSystem::Get().LoadDll(ToUtf8(module));
+	std::unordered_map<std::string, uint8_t> visit;
+	std::function<void(const std::string&)> load_module = [&](const std::string& key) {
+		const auto state = visit[key];
+		if (state == 2)
+			return;
+		if (state == 1)
+			return;
+		visit[key] = 1;
+		if (auto header_it = generated_headers.find(key); header_it != generated_headers.end()) {
+			for (const auto& dependency : BlueprintDependencies(header_it->second, key))
+				load_module(dependency);
+		}
+		if (auto module_it = modules.find(key); module_it != modules.end())
+			CG::Core::VSystem::Get().LoadDll(ToUtf8(module_it->second));
+		visit[key] = 2;
+	};
+
+	std::vector<std::string> asset_keys;
+	asset_keys.reserve(assets_.size());
+	for (const auto& [key, asset] : assets_) {
+		(void)asset;
+		asset_keys.push_back(key);
+	}
+	std::sort(asset_keys.begin(), asset_keys.end());
+	for (const auto& key : asset_keys)
+		load_module(key);
+
+	std::vector<std::string> module_keys;
+	module_keys.reserve(modules.size());
+	for (const auto& [key, path] : modules) {
+		(void)path;
+		module_keys.push_back(key);
+	}
+	std::sort(module_keys.begin(), module_keys.end());
+	for (const auto& key : module_keys)
+		load_module(key);
 
 	LoadAssets();
 	PublishAssets();
@@ -1347,6 +1468,11 @@ void Engine::Impl::SetRise(std::function<void(const Message&)> fn)
 {
 	std::lock_guard lock(mutex_);
 	rise_ = std::move(fn);
+}
+
+void Engine::Impl::SetOutputHandler(std::function<void(const std::string&)> handler)
+{
+	CG::Core::VSystem::Get().SetPrinter(std::move(handler));
 }
 
 void Engine::Impl::Apply(const Message& msg)
@@ -2138,6 +2264,7 @@ bool Engine::Impl::AddNode(const Message& msg)
 				RiseFail(rise_, msg, "invalid node", guid);
 				break;
 			}
+			caller = MakeNodeCaller(caller);
 			node = CG::Core::VNode::Make(caller);
 			if (!node) {
 				RiseFail(rise_, msg, "add node failed", guid);
@@ -2300,8 +2427,127 @@ bool Engine::Impl::AltNode(const Message& msg)
 			auto caller = node->GetCaller();
 			auto entry = std::dynamic_pointer_cast<CG::Core::FEntry>(caller);
 			auto exit = std::dynamic_pointer_cast<CG::Core::FExit>(caller);
+			auto sequence = std::dynamic_pointer_cast<CG::Core::FSequence>(caller);
+			auto switch_int = std::dynamic_pointer_cast<CG::Core::FSwitchInt>(caller);
+			auto reply_node = [&](json body, json removed_lines = json::array()) {
+				body[g_key_asset] = owned.asset->second->GetGuid();
+				body[g_key_flow] = owned.flow->GetGuid();
+				body[g_key_removed_lines] = std::move(removed_lines);
+				Message reply{};
+				reply.act = msg.act;
+				reply.code = 0;
+				reply.token = msg.token;
+				reply.data = body.dump();
+				rise_(reply);
+			};
+
+			if (operation == "add_then" || operation == "add_case") {
+				const std::string name = root.value(g_key_name, std::string{});
+				const std::string added = sequence ? sequence->AddThen(name)
+					: (switch_int ? switch_int->AddCase(name) : std::string{});
+				if (added.empty()) {
+					RiseFail(rise_, msg, "dynamic pin cannot be added", guid);
+					break;
+				}
+				node->ApplyMeta();
+				if (!Persist(owned.asset->second)) {
+					if (sequence) sequence->DelThen(added); else switch_int->DelCase(added);
+					node->ApplyMeta();
+					RiseFail(rise_, msg, "write asset failed", guid);
+					break;
+				}
+				reply_node(TermNodeJson(*node));
+				ok = true;
+				break;
+			}
+
+			if (operation == "delete_then" || operation == "delete_case") {
+				const std::string pin_guid = root.value(g_key_pin, std::string{});
+				auto pin = node->GetPin(pin_guid);
+				const std::string name = pin ? pin->GetPinMeta().name : std::string{};
+				if (!pin || pin->GetDirect() != CG::Core::EDirect::Out ||
+					pin->GetPinMeta().kind != CG::Core::PinKind::Exec) {
+					RiseFail(rise_, msg, "dynamic pin not found", guid);
+					break;
+				}
+				std::vector<std::tuple<std::string, std::shared_ptr<CG::Core::APin>, std::shared_ptr<CG::Core::APin>>> lines;
+				for (const auto& [line_guid, line] : owned.graph->GetLines()) {
+					if (line && (line->GetFrom() == pin || line->GetTo() == pin))
+						lines.emplace_back(line_guid, line->GetFrom(), line->GetTo());
+				}
+				const bool removed = sequence ? sequence->DelThen(name) : (switch_int ? switch_int->DelCase(name) : false);
+				if (!removed) {
+					RiseFail(rise_, msg, "dynamic pin cannot be removed", guid);
+					break;
+				}
+				node->ApplyMeta();
+				json removed_lines = json::array();
+				for (const auto& [line_guid, from, to] : lines) {
+					(void)from; (void)to;
+					if (auto line = owned.graph->FindLine(line_guid)) CG::Core::DisconnectLine(line);
+					owned.graph->DelLine(line_guid);
+					removed_lines.push_back(line_guid);
+				}
+				if (!Persist(owned.asset->second)) {
+					if (sequence) sequence->AddThen(name); else switch_int->AddCase(name);
+					if (switch_int) switch_int->SetCaseValue(name, pin->GetPinMeta().value);
+					node->ApplyMeta();
+					std::shared_ptr<CG::Core::APin> restored_pin;
+					for (const auto& candidate : node->GetOutputPins())
+						if (candidate && candidate->GetPinMeta().name == name) { restored_pin = candidate; break; }
+					if (restored_pin) restored_pin->SetGuid(pin->GetGuid());
+					for (const auto& [line_guid, old_from, old_to] : lines) {
+						auto from_pin = old_from == pin ? restored_pin : old_from;
+						auto to_pin = old_to == pin ? restored_pin : old_to;
+						auto restored = CG::Core::MakeLine(from_pin, to_pin);
+						if (restored) { restored->SetGuid(line_guid); owned.graph->AddLine(restored); }
+					}
+					RiseFail(rise_, msg, "write asset failed", guid);
+					break;
+				}
+				reply_node(TermNodeJson(*node), std::move(removed_lines));
+				ok = true;
+				break;
+			}
+
+			if (operation == "set_case_value") {
+				if (!switch_int) {
+					RiseFail(rise_, msg, "case value is only supported by SwitchInt", guid);
+					break;
+				}
+				const std::string pin_guid = root.value(g_key_pin, std::string{});
+				auto pin = node->GetPin(pin_guid);
+				const std::string value = root.value(g_key_value, std::string{});
+				int parsed = 0;
+				const auto parse_result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+				if (value.empty() || parse_result.ec != std::errc{} || parse_result.ptr != value.data() + value.size()) {
+					RiseFail(rise_, msg, "invalid case value", guid);
+					break;
+				}
+				if (!pin || pin->GetDirect() != CG::Core::EDirect::Out ||
+					pin->GetPinMeta().kind != CG::Core::PinKind::Exec || pin->GetPinMeta().name.rfind("case_", 0) != 0) {
+					RiseFail(rise_, msg, "case pin not found", guid);
+					break;
+				}
+				const std::string old_value = pin->GetPinMeta().value;
+				if (!switch_int->SetCaseValue(pin->GetPinMeta().name, std::to_string(parsed))) {
+					RiseFail(rise_, msg, "case value cannot be changed", guid);
+					break;
+				}
+				node->ApplyMeta();
+				if (!Persist(owned.asset->second)) {
+					switch_int->SetCaseValue(pin->GetPinMeta().name, old_value);
+					node->ApplyMeta();
+					RiseFail(rise_, msg, "write asset failed", guid);
+					break;
+				}
+				reply_node(TermNodeJson(*node));
+				ok = true;
+				break;
+			}
+
 			if (!entry && !exit) {
-				RiseFail(rise_, msg, "only Entry and Exit parameters can be changed", guid);
+				RiseFail(rise_, msg, "unsupported node parameter operation", guid);
 				break;
 			}
 
@@ -2636,15 +2882,12 @@ bool Engine::Impl::Compile(const Message& msg)
 		// Core stores the stable public type header as <space>/<name>.h. Engine
 		// keeps each blueprint's generated implementation in a private directory
 		// beside that public header.
-		const fs::path dependency_dir = (root_ / relative_header.parent_path()
-			/ FromUtf8(relative_header.stem().string())).lexically_normal();
-		std::error_code dependency_ec;
-		if (!fs::is_directory(dependency_dir, dependency_ec)
-			|| !fs::exists(dependency_dir / "CMakeLists.txt", dependency_ec))
+		const std::string dependency_name = ToUtf8(relative_header.stem());
+		const fs::path dependency_dir = (type_dir_ / relative_header.parent_path()).lexically_normal();
+		if (dependency_dir == (type_dir_ / FromUtf8(asset->GetSpace())).lexically_normal()
+			&& dependency_name == asset->GetName())
 			continue;
-		if (dependency_dir == generated_dir.lexically_normal())
-			continue;
-		const auto artifacts = LatestBlueprintLinkArtifacts(dependency_dir, CLASSGRAPH_BUILD_CONFIG);
+		const auto artifacts = BlueprintLinkArtifacts(dependency_dir, dependency_name);
 		if (artifacts.first.empty() || artifacts.second.empty()) {
 			RiseFail(rise_, msg, "blueprint dependency must be compiled before compiling this blueprint", type_header);
 			return false;
@@ -2675,7 +2918,7 @@ bool Engine::Impl::Compile(const Message& msg)
 		return path;
 	};
 	const std::string name = asset->GetName();
-	const std::string runtime_name = "BlueprintRuntime_" + asset->GetGuid();
+	const std::string runtime_name = name;
 	std::string cmake_project =
 		"cmake_minimum_required(VERSION 3.20)\n"
 		"project(ClassGraphBlueprint LANGUAGES CXX)\n"
@@ -2692,11 +2935,6 @@ bool Engine::Impl::Compile(const Message& msg)
 		cmake_project += " \"" + cmake_path(ToUtf8(dependency_lib)) + "\"";
 	}
 	cmake_project += ")\n";
-	for (const auto& [dependency_dll, dependency_lib] : dependency_artifacts) {
-		(void)dependency_lib;
-		cmake_project += "add_custom_command(TARGET BlueprintRuntime POST_BUILD COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different \""
-			+ cmake_path(ToUtf8(dependency_dll)) + "\" \"$<TARGET_FILE_DIR:BlueprintRuntime>\")\n";
-	}
 	if (!WriteText(generated_dir / "CMakeLists.txt", cmake_project)) {
 		RiseFail(rise_, msg, "write generated build project failed", guid);
 		return false;
@@ -2709,6 +2947,15 @@ bool Engine::Impl::Compile(const Message& msg)
 	std::vector<std::wstring> configure_args{
 		L"-S", generated_dir.native(), L"-B", build_dir.native(), L"-G", FromUtf8(CLASSGRAPH_CMAKE_GENERATOR).native()
 	};
+	const std::wstring generator_instance = FromUtf8(CLASSGRAPH_CMAKE_GENERATOR_INSTANCE).native();
+	if (!generator_instance.empty()) {
+		configure_args.push_back(L"-DCMAKE_GENERATOR_INSTANCE=" + generator_instance);
+	}
+	const std::wstring generator_toolset = FromUtf8(CLASSGRAPH_CMAKE_GENERATOR_TOOLSET).native();
+	if (!generator_toolset.empty()) {
+		configure_args.push_back(L"-T");
+		configure_args.push_back(generator_toolset);
+	}
 	const std::wstring platform = FromUtf8(CLASSGRAPH_CMAKE_PLATFORM).native();
 	if (!platform.empty()) { configure_args.push_back(L"-A"); configure_args.push_back(platform); }
 	DWORD exit_code = 0;
@@ -2733,9 +2980,31 @@ bool Engine::Impl::Compile(const Message& msg)
 		rise_(reply);
 		return false;
 	}
-	const fs::path dll = build_dir / FromUtf8(CLASSGRAPH_BUILD_CONFIG) / FromUtf8(runtime_name + ".dll");
+	const fs::path built_dll = build_dir / FromUtf8(CLASSGRAPH_BUILD_CONFIG) / FromUtf8(runtime_name + ".dll");
+	const fs::path library_dir = type_dir_ / FromUtf8(asset->GetSpace());
+	const fs::path dll = library_dir / FromUtf8(runtime_name + ".dll");
+	fs::path built_lib = built_dll;
+	built_lib.replace_extension(".lib");
+	fs::path lib = dll;
+	lib.replace_extension(".lib");
+	std::error_code library_ec;
+	fs::create_directories(library_dir, library_ec);
+	if (library_ec) {
+		RiseFail(rise_, msg, "create type library directory failed", ToUtf8(library_dir));
+		return false;
+	}
 	const std::string type_key = asset->GetSpace() + "::" + asset->GetName();
 	CG::Core::VSystem::Get().UnloadDll(type_key);
+	fs::copy_file(built_dll, dll, fs::copy_options::overwrite_existing, library_ec);
+	if (library_ec) {
+		RiseFail(rise_, msg, "publish type library failed", ToUtf8(dll));
+		return false;
+	}
+	fs::copy_file(built_lib, lib, fs::copy_options::overwrite_existing, library_ec);
+	if (library_ec) {
+		RiseFail(rise_, msg, "publish type import library failed", ToUtf8(lib));
+		return false;
+	}
 	if (!CG::Core::VSystem::Get().LoadDll(ToUtf8(dll))) {
 		RiseFail(rise_, msg, "build succeeded but loading generated DLL failed", guid);
 		return false;

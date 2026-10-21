@@ -137,14 +137,17 @@ json NodeFields(const NodeMeta& node, const FlowMeta& flow)
 
 	json groups = json::array();
 	for (const auto& pin : pins) {
-		if (pin->kind != 1)
+		const bool dynamic_output = node.name == "SwitchInt" && pin->kind == 0 && pin->direct == 1
+			&& pin->name.rfind("case_", 0) == 0;
+		if (pin->kind != 1 && !dynamic_output)
 			continue;
 		const bool connected = std::any_of(flow.lines.begin(), flow.lines.end(), [&](const auto& entry) {
 			const auto& line = entry.second;
 			return line && ((pin->direct == 0 && line->to_pin == pin->guid)
 				|| (pin->direct == 1 && line->from_pin == pin->guid));
 		});
-		const bool editable_value = pin->direct == 0 && !connected && !pin->type.empty();
+		const bool editable_value = (pin->direct == 0 && !connected && !pin->type.empty())
+			|| (node.name == "SwitchInt" && dynamic_output);
 		const std::string editor = editable_value
 			? (pin->type == "bool" ? g_show_check : g_show_line) : g_show_label;
 		json details = json::array({
@@ -152,6 +155,11 @@ json NodeFields(const NodeMeta& node, const FlowMeta& flow)
 			Field(g_key_type, "类型", g_show_label, pin->type),
 			Field(g_key_value, "值", editor, pin->value),
 		});
+		if (node.name == "SwitchInt" && dynamic_output)
+		{
+			details[2][g_key_editable] = true;
+			details[2][g_key_param_action] = "set_case_value";
+		}
 		groups.push_back({
 			{g_key_key, pin->guid},
 			{g_key_text, pin->name},
@@ -168,7 +176,8 @@ json NodeFields(const NodeMeta& node, const FlowMeta& flow)
 	});
 	json pins_field = Field(g_key_pins, "参数", g_show_list, std::move(groups));
 	pins_field[g_key_editable] = node.name == g_node_entry || node.name == g_node_exit;
-	fields.push_back(std::move(pins_field));
+	if (node.name != "Sequence")
+		fields.push_back(std::move(pins_field));
 	fields[0][g_key_editable] = false;
 	return fields;
 }

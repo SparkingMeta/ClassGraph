@@ -75,6 +75,16 @@ std::unique_ptr<CStmt> CG::Core::cg::MakeCompound(std::vector<std::unique_ptr<CS
 	return s;
 }
 
+std::unique_ptr<CStmt> CG::Core::cg::MakeDeclare(std::string type, std::string name, std::unique_ptr<CExpr> value)
+{
+	auto s = std::make_unique<CStmt>();
+	s->kind = StmtKind::SK_Declare;
+	s->declaration_type = std::move(type);
+	s->declaration_name = std::move(name);
+	s->value = std::move(value);
+	return s;
+}
+
 std::unique_ptr<CStmt> CG::Core::cg::MakeAssign(std::unique_ptr<CExpr> target, std::unique_ptr<CExpr> value)
 {
 	auto s = std::make_unique<CStmt>();
@@ -119,11 +129,15 @@ std::unique_ptr<CStmt> CG::Core::cg::MakeWhile(std::unique_ptr<CExpr> cond, std:
 	return s;
 }
 
-std::unique_ptr<CStmt> CG::Core::cg::MakeFor(std::string index_name, std::unique_ptr<CExpr> first, std::unique_ptr<CExpr> last, std::unique_ptr<CStmt> body)
+std::unique_ptr<CStmt> CG::Core::cg::MakeFor(std::string index_name, std::unique_ptr<CExpr> first,
+	std::unique_ptr<CExpr> last, std::unique_ptr<CStmt> body, std::string result_name,
+	std::string result_type)
 {
 	auto s = std::make_unique<CStmt>();
 	s->kind = StmtKind::SK_For;
 	s->index_name = std::move(index_name);
+	s->result_name = std::move(result_name);
+	s->result_type = std::move(result_type);
 	s->first = std::move(first);
 	s->last = std::move(last);
 	s->body = std::move(body);
